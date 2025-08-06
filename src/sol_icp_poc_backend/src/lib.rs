@@ -5,12 +5,10 @@ use ic_ledger_types::{
     MAINNET_LEDGER_CANISTER_ID,
 };
 use ic_stable_structures::{memory_manager::{MemoryId, MemoryManager, VirtualMemory}, DefaultMemoryImpl, StableBTreeMap};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha224, Sha256};
 use std::cell::RefCell;
 use bs58;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
-const DEFAULT_LEDGER_CANISTER_ID: Principal = Principal::from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, 0x01]); // ryjl3-tyaaa-aaaaa-aaaba-cai
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 thread_local! {
@@ -61,7 +59,7 @@ async fn get_balance(sol_pubkey: String) -> u64 {
     let account = AccountIdentifier::new(&ic_cdk::id(), &subaccount);
     let args = ic_ledger_types::AccountBalanceArgs { account };
     ic_ledger_types::account_balance(
-        DEFAULT_LEDGER_CANISTER_ID, // Switch to MAINNET_LEDGER_CANISTER_ID for production
+        MAINNET_LEDGER_CANISTER_ID,
         args,
     ).await.unwrap_or(Tokens::from_e8s(0)).e8s()
 }
@@ -104,10 +102,24 @@ async fn transfer(to_hex: String, amount_e8s: u64, sol_pubkey: String, signature
         created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
     };
 
-    match ic_ledger_types::transfer(DEFAULT_LEDGER_CANISTER_ID, args).await { // Switch to MAINNET_LEDGER_CANISTER_ID for production
+    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, args).await {
         Ok(Ok(block_index)) => format!("Transfer successful: block {}", block_index),
         _ => "Transfer failed".to_string(),
     }
+}
+
+#[query]
+fn get_pid(sol_pubkey: String) -> String {
+    let pubkey_bytes = match bs58::decode(sol_pubkey).into_vec() {
+        Ok(bytes) if bytes.len() == 32 => bytes,
+        _ => return "Invalid pubkey".to_string(),
+    };
+    let mut hasher = Sha224::new();
+    hasher.update(&pubkey_bytes);
+    let hash = hasher.finalize();
+    let mut principal_bytes: Vec<u8> = hash.to_vec();
+    principal_bytes.push(0x02); // Ed25519 type byte
+    Principal::from_slice(&principal_bytes).to_text()
 }
 
 export_candid!();

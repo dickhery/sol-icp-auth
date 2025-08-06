@@ -1,6 +1,7 @@
 service : {
   "get_deposit_address": (text) -> (text) query;
-  "get_balance": (text) -> (nat64) query;
+  "get_balance": (text) -> (nat64);
   "transfer": (text, nat64, text, vec nat8, nat64) -> (text);
   "get_nonce": (text) -> (nat64) query;
+  "get_pid": (text) -> (text) query;
 }

@@ -1,9 +1,15 @@
 import { Actor, HttpAgent } from "@dfinity/agent";
-import { idlFactory } from "./sol_icp_poc_backend.did.js"; // Generate this via dfx build
-// Note: Run `dfx build` to generate sol_icp_poc_backend.did.js in declarations/
+import { idlFactory } from "../../../.dfx/ic/canisters/sol_icp_poc_backend/service.did.js";
 
-const canisterId = "uxrrr-q7777-77774-qaaaq-cai"; // Replace with dfx canister id sol_icp_poc_backend after deploy
-const agent = new HttpAgent({ host: "http://localhost:4943" }); // For local; change to https://icp0.io for mainnet
+
+const host = process.env.DFX_NETWORK === "ic" ? "https://ic0.app" : "http://localhost:4943";
+const canisterId = process.env.CANISTER_ID_SOL_ICP_POC_BACKEND;
+const agent = new HttpAgent({ host });
+
+if (process.env.DFX_NETWORK !== "ic") {
+  agent.fetchRootKey();
+}
+
 const actor = Actor.createActor(idlFactory, { agent, canisterId });
 
 // Phantom detection from docs
@@ -27,6 +33,10 @@ document.getElementById("connect").onclick = async () => {
         // Get deposit address
         const deposit = await actor.get_deposit_address(solPubkey);
         document.getElementById("deposit").innerText = `Deposit to: ${deposit} (Send ICP here manually)`;
+
+        // Get PID
+        const pid = await actor.get_pid(solPubkey);
+        document.getElementById("pid").innerText = `ICP PID: ${pid}`;
 
         // Get balance
         const balance = await actor.get_balance(solPubkey);
