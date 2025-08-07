@@ -23,6 +23,10 @@ function getProvider() {
 const provider = getProvider();
 let solPubkey = null;
 
+const serviceFeeICP = 0.0001;
+const networkFeeICP = 0.0002; // For two ledger transfers
+const serviceFeeE8s = BigInt(Math.round(serviceFeeICP * 1e8));
+
 document.getElementById("connect").onclick = async () => {
     try {
         const resp = await provider.connect();
@@ -57,8 +61,15 @@ document.getElementById("send").onclick = async () => {
     const amount = BigInt(Math.round(parseFloat(amountICP) * 1e8));
     const nonce = await actor.get_nonce(solPubkey);
 
+    const amountICPNum = parseFloat(amountICP);
+    const totalICP = amountICPNum + serviceFeeICP + networkFeeICP;
+    const confirmMsg = `Confirm transaction:\nTo: ${to}\nAmount: ${amountICP} ICP\nNetwork fee: ${networkFeeICP} ICP (includes ledger fees for transaction processing)\nService fee: ${serviceFeeICP} ICP\nTotal deduction from your balance: ${totalICP.toFixed(8)} ICP`;
+    if (!window.confirm(confirmMsg)) {
+        return;
+    }
+
     // Message from docs pattern
-    const message = `transfer to ${to} amount ${amount} nonce ${nonce}`;
+    const message = `transfer to ${to} amount ${amount} nonce ${nonce} service_fee ${serviceFeeE8s}`;
     const encodedMessage = new TextEncoder().encode(message);
 
     const button = document.getElementById("send");

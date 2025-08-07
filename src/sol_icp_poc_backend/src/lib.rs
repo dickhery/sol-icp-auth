@@ -9,11 +9,17 @@ use sha2::{Digest, Sha224, Sha256};
 use std::cell::RefCell;
 use bs58;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use lazy_static::lazy_static;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
     static NONCE_MAP: RefCell<StableBTreeMap<String, u64, Memory>> = RefCell::new(StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(0)))));
+}
+
+const SERVICE_FEE: u64 = 10000; // 0.0001 ICP in e8s
+lazy_static! {
+    static ref SERVICE_ACCOUNT: AccountIdentifier = AccountIdentifier::from_hex("573292a9fdfff9ba7e23bcab9a99ab7db2a96c2e6697cf401a837f1c3a3280ed").unwrap();
 }
 
 fn derive_subaccount(sol_pubkey: &str) -> Subaccount {
@@ -83,7 +89,7 @@ async fn transfer(to_hex: String, amount_e8s: u64, sol_pubkey: String, signature
         map.insert(sol_pubkey.clone(), current_nonce + 1);
     });
 
-    let message = format!("transfer to {} amount {} nonce {}", to_hex, amount_e8s, nonce).into_bytes();
+    let message = format!("transfer to {} amount {} nonce {} service_fee {}", to_hex, amount_e8s, nonce, SERVICE_FEE).into_bytes();
 
     if !verify_signature(&sol_pubkey, &message, &signature) {
         return "Invalid signature".to_string();
@@ -93,6 +99,23 @@ async fn transfer(to_hex: String, amount_e8s: u64, sol_pubkey: String, signature
     let to = AccountIdentifier::from_slice(&to_bytes).unwrap_or(AccountIdentifier::new(&Principal::anonymous(), &Subaccount([0; 32])));
 
     let subaccount = derive_subaccount(&sol_pubkey);
+
+    // Service fee transfer
+    let service_args = TransferArgs {
+        memo: Memo(0),
+        amount: Tokens::from_e8s(SERVICE_FEE),
+        fee: DEFAULT_FEE,
+        from_subaccount: Some(subaccount),
+        to: *SERVICE_ACCOUNT,
+        created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
+    };
+    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, service_args).await {
+        Ok(Ok(_)) => {}, // Success, proceed
+        Ok(Err(e)) => return format!("Service fee transfer failed: {:?}", e),
+        Err(e) => return format!("Call error for service fee: {:?}", e),
+    }
+
+    // Main transfer
     let args = TransferArgs {
         memo: Memo(0),
         amount: Tokens::from_e8s(amount_e8s),
