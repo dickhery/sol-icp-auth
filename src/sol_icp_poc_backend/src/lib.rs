@@ -104,7 +104,10 @@ async fn transfer(to_hex: String, amount_e8s: u64, sol_pubkey: String, signature
 
     match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, args).await {
         Ok(Ok(block_index)) => format!("Transfer successful: block {}", block_index),
-        Ok(Err(TransferError::InsufficientFunds { balance })) => format!("Insufficient funds: balance is {} e8s", balance.e8s()),
+        Ok(Err(TransferError::InsufficientFunds { balance })) => {
+            let icp_balance = balance.e8s() as f64 / 100_000_000.0;
+            format!("Insufficient funds: balance is {:.8} ICP", icp_balance)
+        },
         Ok(Err(other)) => format!("Transfer failed: {:?}", other),
         Err(call_error) => format!("Call error: {:?}", call_error),
     }

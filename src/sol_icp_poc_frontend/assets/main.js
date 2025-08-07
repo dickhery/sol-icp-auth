@@ -50,12 +50,20 @@ document.getElementById("send").onclick = async () => {
     if (!solPubkey) return alert("Connect first");
 
     const to = document.getElementById("to").value;
-    const amount = BigInt(document.getElementById("amount").value);
+    const amountICP = document.getElementById("amount").value;
+    if (isNaN(parseFloat(amountICP)) || parseFloat(amountICP) < 0) {
+        return alert("Invalid amount");
+    }
+    const amount = BigInt(Math.round(parseFloat(amountICP) * 1e8));
     const nonce = await actor.get_nonce(solPubkey);
 
     // Message from docs pattern
     const message = `transfer to ${to} amount ${amount} nonce ${nonce}`;
     const encodedMessage = new TextEncoder().encode(message);
+
+    const button = document.getElementById("send");
+    button.disabled = true;
+    button.innerText = 'Sending...';
 
     try {
         const signed = await provider.signMessage(encodedMessage, "utf8");
@@ -68,8 +76,17 @@ document.getElementById("send").onclick = async () => {
         const balanceE8s = await actor.get_balance(solPubkey);
         const balanceICP = (Number(balanceE8s) / 1e8).toFixed(8);
         document.getElementById("balance").innerText = `Balance: ${balanceICP} ICP`;
+
+        // Clear inputs only on success
+        if (result.startsWith("Transfer successful")) {
+            document.getElementById("to").value = '';
+            document.getElementById("amount").value = '';
+        }
     } catch (err) {
         document.getElementById("status").innerText = `Error: ${err.message}`;
+    } finally {
+        button.disabled = false;
+        button.innerText = 'Send ICP';
     }
 };
 
@@ -81,7 +98,7 @@ document.getElementById("logout").onclick = async () => {
         document.getElementById("pid").innerText = '';
         document.getElementById("deposit").innerText = '';
         document.getElementById("balance").innerText = '';
-        document.getElementById("status").innerText = 'Disconnected';
+        document.getElementById("status").innerText = 'Disconnected. To prevent auto-reconnect, revoke access in Phantom settings (Settings > Connected Apps > Revoke this app) or lock your wallet.';
     } catch (err) {
         document.getElementById("status").innerText = `Error: ${err.message}`;
     }
