@@ -1,7 +1,6 @@
 import { Actor, HttpAgent } from "@dfinity/agent";
 import { idlFactory } from "../../../.dfx/ic/canisters/sol_icp_poc_backend/service.did.js";
 
-
 const host = process.env.DFX_NETWORK === "ic" ? "https://ic0.app" : "http://localhost:4943";
 const canisterId = process.env.CANISTER_ID_SOL_ICP_POC_BACKEND;
 const agent = new HttpAgent({ host });
@@ -39,8 +38,9 @@ document.getElementById("connect").onclick = async () => {
         document.getElementById("pid").innerText = `ICP PID: ${pid}`;
 
         // Get balance
-        const balance = await actor.get_balance(solPubkey);
-        document.getElementById("balance").innerText = `Balance: ${balance} e8s`;
+        const balanceE8s = await actor.get_balance(solPubkey);
+        const balanceICP = (Number(balanceE8s) / 1e8).toFixed(8);
+        document.getElementById("balance").innerText = `Balance: ${balanceICP} ICP`;
     } catch (err) {
         document.getElementById("status").innerText = `Error: ${err.message}`;
     }
@@ -65,8 +65,23 @@ document.getElementById("send").onclick = async () => {
         document.getElementById("status").innerText = result;
 
         // Refresh balance
-        const balance = await actor.get_balance(solPubkey);
-        document.getElementById("balance").innerText = `Balance: ${balance} e8s`;
+        const balanceE8s = await actor.get_balance(solPubkey);
+        const balanceICP = (Number(balanceE8s) / 1e8).toFixed(8);
+        document.getElementById("balance").innerText = `Balance: ${balanceICP} ICP`;
+    } catch (err) {
+        document.getElementById("status").innerText = `Error: ${err.message}`;
+    }
+};
+
+document.getElementById("logout").onclick = async () => {
+    try {
+        await provider.disconnect();
+        solPubkey = null;
+        document.getElementById("pubkey").innerText = '';
+        document.getElementById("pid").innerText = '';
+        document.getElementById("deposit").innerText = '';
+        document.getElementById("balance").innerText = '';
+        document.getElementById("status").innerText = 'Disconnected';
     } catch (err) {
         document.getElementById("status").innerText = `Error: ${err.message}`;
     }

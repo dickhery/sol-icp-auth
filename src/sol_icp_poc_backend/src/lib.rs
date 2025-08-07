@@ -1,7 +1,7 @@
 use ic_cdk::{export_candid, query, update};
 use ic_principal::Principal;
 use ic_ledger_types::{
-    AccountIdentifier, Memo, Subaccount, Timestamp, Tokens, TransferArgs, DEFAULT_FEE,
+    AccountIdentifier, Memo, Subaccount, Timestamp, Tokens, TransferArgs, TransferError, DEFAULT_FEE,
     MAINNET_LEDGER_CANISTER_ID,
 };
 use ic_stable_structures::{memory_manager::{MemoryId, MemoryManager, VirtualMemory}, DefaultMemoryImpl, StableBTreeMap};
@@ -104,7 +104,9 @@ async fn transfer(to_hex: String, amount_e8s: u64, sol_pubkey: String, signature
 
     match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, args).await {
         Ok(Ok(block_index)) => format!("Transfer successful: block {}", block_index),
-        _ => "Transfer failed".to_string(),
+        Ok(Err(TransferError::InsufficientFunds { balance })) => format!("Insufficient funds: balance is {} e8s", balance.e8s()),
+        Ok(Err(other)) => format!("Transfer failed: {:?}", other),
+        Err(call_error) => format!("Call error: {:?}", call_error),
     }
 }
 
