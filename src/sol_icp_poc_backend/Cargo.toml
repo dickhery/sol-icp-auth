@@ -8,12 +8,11 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-candid = "0.10.10"
-ic-cdk = "0.16.1"
-ic-cdk-macros = "0.13.2"
-ic-cdk-timers = "0.7.0"
-ic-ledger-types = "0.13.0"
-ic-stable-structures = "0.6.5"
+candid = "0.10.17"
+ic-cdk = "0.18.5"
+ic-cdk-macros = "0.18.5"  # Updated to match ic-cdk version
+ic-ledger-types = "0.15.0"
+ic-stable-structures = "0.7.0"
 serde = "1.0"
 ed25519-dalek = "2.1.0"
 bs58 = "0.5"
@@ -21,3 +20,4 @@ sha2 = "0.10"
 hex = "0.4"
 ic_principal = "0.1.1"
 lazy_static = "1.4.0"
+base64 = "0.22.1"
