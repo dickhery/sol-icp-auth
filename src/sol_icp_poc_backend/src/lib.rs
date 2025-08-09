@@ -11,7 +11,7 @@ use ic_ledger_types::{
     MAINNET_LEDGER_CANISTER_ID,
 };
 use ic_stable_structures::{memory_manager::{MemoryId, MemoryManager, VirtualMemory}, DefaultMemoryImpl, StableBTreeMap};
-use sha2::{Digest, Sha224, Sha256};
+use sha2::{Digest, Sha256, Sha224};
 use std::cell::RefCell;
 use bs58;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -34,9 +34,6 @@ lazy_static! {
 }
 
 /* ----------------------------- SOL RPC TYPES ----------------------------- */
-/* These mirror the SOL RPC canister IDL for just the pieces we use.        */
-/* Field names must match Candid exactly; we use #[serde(rename = "...")]   */
-/* See attached IDL for the full interface.                                 */
 
 #[derive(CandidType, Deserialize, Clone)]
 pub enum SolanaCluster { Mainnet }
@@ -79,7 +76,7 @@ pub struct GetBalanceParams {
 #[derive(CandidType, Deserialize, Clone)]
 pub enum GetBalanceResult {
     Ok(u64),
-    Err(String), // We won't use the inner RpcError; string for readable fallback
+    Err(String),
 }
 
 #[derive(CandidType, Deserialize, Clone)]
@@ -90,7 +87,6 @@ pub enum MultiGetBalanceResult {
 
 #[derive(CandidType, Deserialize, Clone)]
 pub enum RpcSource {
-    // Minimal variants to decode Inconsistent case if it occurs
     Supported(SupportedProvider),
     Custom(RpcEndpoint),
 }
@@ -318,7 +314,8 @@ async fn sol_get_balance_lamports(pubkey: String) -> Result<u64, String> {
 
     let args = candid::encode_args((rpc_sources, rpc_cfg, params)).map_err(|e| e.to_string())?;
 
-    let cycles: u128 = 1_000_000_000;
+    // 2B cycles for a bit more headroom
+    let cycles: u128 = 2_000_000_000;
     let raw = call_raw128(*SOL_RPC_PRINCIPAL, "getBalance", args, cycles).await
         .map_err(|err| format!("getBalance call error: {:?}", err))?;
 
@@ -342,7 +339,7 @@ async fn sol_get_finalized_slot() -> Result<u64, String> {
     let cfg: Option<GetSlotRpcConfig> = None;
     let params = Some(GetSlotParams { min_context_slot: None, commitment: Some(CommitmentLevel::Finalized) });
     let args = candid::encode_args((rpc_sources, cfg, params)).map_err(|e| e.to_string())?;
-    let cycles: u128 = 1_000_000_000;
+    let cycles: u128 = 2_000_000_000;
     let raw = call_raw128(*SOL_RPC_PRINCIPAL, "getSlot", args, cycles).await
         .map_err(|e| format!("getSlot call error: {:?}", e))?;
     let (multi,): (MultiGetSlotResult,) = candid::decode_args(&raw).map_err(|e| format!("getSlot decode error: {:?}", e))?;
@@ -402,7 +399,7 @@ async fn sol_send_transaction_b64(tx_b64: String) -> Result<String, String> {
     };
 
     let args = candid::encode_args((rpc_sources, rpc_cfg, params)).map_err(|e| e.to_string())?;
-    let cycles: u128 = 1_000_000_000;
+    let cycles: u128 = 2_000_000_000;
     let raw = call_raw128(*SOL_RPC_PRINCIPAL, "sendTransaction", args, cycles).await
         .map_err(|e| format!("sendTransaction call error: {:?}", e))?;
     let (multi,): (MultiSendTransactionResult,) = candid::decode_args(&raw).map_err(|e| format!("sendTransaction decode error: {:?}", e))?;
@@ -457,7 +454,7 @@ async fn transfer_sol(to: String, amount: u64, sol_pubkey: String, signature: Ve
 
     let subaccount = derive_subaccount(&sol_pubkey);
 
-    // charge service fee in ICP
+    // charge service fee in ICP (single call + proper matching)
     let service_args = TransferArgs {
         memo: Memo(0),
         amount: Tokens::from_e8s(SERVICE_FEE_SOL),
@@ -466,11 +463,10 @@ async fn transfer_sol(to: String, amount: u64, sol_pubkey: String, signature: Ve
         to: *SERVICE_ACCOUNT,
         created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
     };
-    if let Err(e) = ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &service_args).await {
-        return format!("Call error for service fee: {:?}", e);
-    }
-    if let Ok(Err(e)) = ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &service_args).await {
-        return format!("Service fee transfer failed: {:?}", e);
+    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &service_args).await {
+        Ok(Ok(_)) => { /* proceed */ }
+        Ok(Err(e)) => { return format!("Service fee transfer failed: {:?}", e); }
+        Err(e)     => { return format!("Call error for service fee: {:?}", e); }
     }
 
     // get a recent blockhash (slot -> block -> blockhash), finalized commitment
@@ -493,7 +489,7 @@ async fn transfer_sol(to: String, amount: u64, sol_pubkey: String, signature: Ve
         Ok(v) => match v.try_into() { Ok(a) => a, Err(_) => return "Invalid to address".into() },
         Err(_) => return "Invalid to address".into(),
     };
-    // system program pubkey is 32 zero bytes (base58 "111...111")
+    // system program pubkey is 32 zero bytes
     let system_pk = [0u8; 32];
     let accounts = vec![from_pk, to_pk, system_pk];
 
