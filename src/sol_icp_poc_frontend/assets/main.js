@@ -1,5 +1,6 @@
 import { Actor, HttpAgent } from "@dfinity/agent";
-import { idlFactory } from "../../../.dfx/ic/canisters/sol_icp_poc_backend/service.did.js";
+import idlFactory from "./sol_icp_poc_backend.idl.js";
+
 
 const host = process.env.DFX_NETWORK === "ic" ? "https://ic0.app" : "http://localhost:4943";
 const canisterId = process.env.CANISTER_ID_SOL_ICP_POC_BACKEND;
