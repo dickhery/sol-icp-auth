@@ -300,6 +300,54 @@ fn serialize_message(header: [u8; 3], accounts: &Vec<[u8; 32]>, blockhash: [u8; 
     ser
 }
 
+/* ----------- dynamic cycles helper for sign_with_schnorr (NEW) ----------- */
+
+fn parse_required_cycles(err: &str) -> Option<u128> {
+    // Looks for: "but <number> cycles are required"
+    if let Some(start) = err.find("but ") {
+        let rest = &err[start + 4..];
+        if let Some(end) = rest.find(" cycles") {
+            let digits: String = rest[..end].chars().filter(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                if let Ok(v) = digits.parse::<u128>() {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn sign_with_schnorr_dynamic(sign_args: &SignWithSchnorrArgs) -> Result<SignWithSchnorrResult, String> {
+    let mgmt = Principal::management_canister();
+    let arg_bytes = candid::encode_one(sign_args).map_err(|e| format!("Sign encode error: {:?}", e))?;
+
+    // Start a bit higher than the old 25B and be ready to retry.
+    let mut cycles: u128 = 30_000_000_000;
+
+    for attempt in 0..3 {
+        match call_raw128(mgmt, "sign_with_schnorr", arg_bytes.clone(), cycles).await {
+            Ok(raw) => {
+                let sig_reply: SignWithSchnorrResult = candid::decode_one(&raw)
+                    .map_err(|e| format!("Sign decode error: {:?}", e))?;
+                return Ok(sig_reply);
+            }
+            Err((_code, msg)) => {
+                // Try to parse the "required cycles" hint and retry with a buffer.
+                if let Some(required) = parse_required_cycles(&msg) {
+                    cycles = required.saturating_add(1_000_000_000); // +1B headroom
+                } else if attempt == 0 {
+                    // If we can't parse, jump to a big number once, then try parsing again if needed.
+                    cycles = 50_000_000_000;
+                } else {
+                    return Err(format!("Sign error: {}", msg));
+                }
+            }
+        }
+    }
+    Err("Sign error: retries exhausted".into())
+}
+
 /* ------------------------------ SOL RPC calls ------------------------------ */
 
 async fn sol_get_balance_lamports(pubkey: String) -> Result<u64, String> {
@@ -520,17 +568,11 @@ async fn transfer_sol(to: String, amount: u64, sol_pubkey: String, signature: Ve
         key_id: KEY_ID.clone(),
         aux: None,
     };
-    let arg_bytes = candid::encode_one(&sign_args).unwrap();
 
-    let mgmt = Principal::management_canister();
-    let cycles_sign: u128 = 25_000_000_000;
-    let raw_sig = match call_raw128(mgmt, "sign_with_schnorr", arg_bytes, cycles_sign).await {
-        Ok(r) => r,
-        Err(e) => return format!("Sign error: {:?}", e),
-    };
-    let sig_reply: SignWithSchnorrResult = match candid::decode_one(&raw_sig) {
+    // NEW: dynamic cycles / retry logic
+    let sig_reply = match sign_with_schnorr_dynamic(&sign_args).await {
         Ok(s) => s,
-        Err(e) => return format!("Sign decode error: {:?}", e),
+        Err(e) => return e,
     };
 
     // serialize final tx: <num sigs><sig><message>
