@@ -166,7 +166,7 @@ async function refreshIcpBalance(force = false) {
 }
 
 async function refreshBothBalances(force = false) {
-  await Promise.allSettled([
+ await Promise.allSettled([
     refreshIcpBalance(force),
     refreshSolBalance(force),
   ]);
@@ -325,7 +325,10 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
 
     try {
       const result = await friendlyTry(() => actor.transfer_ii(to, amount), (m) => showWarn(m));
-      uiSet("status", result);
+      // Extract block for explorer link
+      const blockMatch = result.match(/block (\d+)/);
+      const block = blockMatch ? blockMatch[1] : '';
+      uiSet("status", `${result}${block ? ` View on Dashboard: https://dashboard.internetcomputer.org/block/${block}` : ''}`);
       await refreshBothBalances(true);
       if (result.startsWith("Transfer successful")) {
         document.getElementById("to").value = '';
@@ -367,7 +370,10 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
       const signature = signed.signature;
 
       const result = await friendlyTry(() => actor.transfer(to, amount, solPubkey, Array.from(signature), nonce), (m) => showWarn(m));
-      uiSet("status", result);
+      // Extract block for explorer link
+      const blockMatch = result.match(/block (\d+)/);
+      const block = blockMatch ? blockMatch[1] : '';
+      uiSet("status", `${result}${block ? ` View on Dashboard: https://dashboard.internetcomputer.org/block/${block}` : ''}`);
       await refreshBothBalances(true);
 
       if (result.startsWith("Transfer successful")) {

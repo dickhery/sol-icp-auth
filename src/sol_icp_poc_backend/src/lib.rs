@@ -721,12 +721,12 @@ async fn transfer_ii(to: String, amount: u64) -> String {
         created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
     };
     match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await {
-        Ok(Ok(_)) => {
+        Ok(Ok(block_height)) => {
             NONCE_MAP.with(|map| {
                 let mut map = map.borrow_mut();
                 map.insert(sol_pk_str.clone(), current_nonce + 1);
             });
-            "Transfer successful".into()
+            format!("Transfer successful: block {}", block_height)
         }
         Ok(Err(e)) => format!("Transfer failed: {:?}", e),
         Err(e) => format!("Call error: {:?}", e),
@@ -921,12 +921,12 @@ async fn transfer(to: String, amount: u64, sol_pubkey: String, signature: Vec<u8
         created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
     };
     match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await {
-        Ok(Ok(_bh)) => {
+        Ok(Ok(block_height)) => {
             NONCE_MAP.with(|map| {
                 let mut map = map.borrow_mut();
                 map.insert(sol_pubkey.clone(), current_nonce + 1);
             });
-            "Transfer successful".into()
+            format!("Transfer successful: block {}", block_height)
         }
         Ok(Err(e)) => format!("Transfer failed: {:?}", e),
         Err(e) => format!("Call error: {:?}", e),
