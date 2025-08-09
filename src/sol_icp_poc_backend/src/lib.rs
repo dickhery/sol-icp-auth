@@ -7,7 +7,8 @@ use ic_cdk::api::call::call_raw128;
 use ic_cdk::api::caller;
 use ic_cdk::trap;
 use ic_cdk::management_canister::{
-    SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs, SignWithSchnorrArgs, SignWithSchnorrResult,
+    SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs, SchnorrPublicKeyResult,
+    SignWithSchnorrArgs, SignWithSchnorrResult,
 };
 use ic_principal::Principal;
 use ic_ledger_types::{
@@ -40,7 +41,7 @@ lazy_static! {
     };
 }
 
-/* ----------------------------- SOL RPC TYPES (unchanged) ----------------------------- */
+/* ----------------------------- SOL RPC TYPES ----------------------------- */
 
 #[derive(CandidType, Deserialize, Clone)]
 pub enum SolanaCluster { Mainnet }
@@ -211,7 +212,7 @@ thread_local! {
     static NONCE_MAP: RefCell<StableBTreeMap<String, u64, Memory>> =
         RefCell::new(StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(0)))));
 
-    // NEW: ownership mappings
+    // Ownership mappings (for optional linking)
     static OWNER_MAP: RefCell<StableBTreeMap<String, String, Memory>> =
         RefCell::new(StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1)))));
     static PRINCIPAL_MAP: RefCell<StableBTreeMap<String, String, Memory>> =
@@ -260,25 +261,6 @@ fn verify_signature(sol_pubkey: &str, message: &[u8], signature: &[u8]) -> bool 
     verifying_key.verify(message, &sig).is_ok()
 }
 
-async fn get_user_sol_pk(sol_pubkey: &str) -> [u8; 32] {
-    let pubkey_bytes = match bs58::decode(sol_pubkey).into_vec() {
-        Ok(bytes) if bytes.len() == 32 => bytes,
-        _ => ic_cdk::trap("Invalid Solana pubkey"),
-    };
-    let derivation_path: Vec<Vec<u8>> = vec![pubkey_bytes.clone()];
-    let pk_args = SchnorrPublicKeyArgs {
-        canister_id: None,
-        derivation_path,
-        key_id: KEY_ID.clone(),
-    };
-    let pk_res = ic_cdk::management_canister::schnorr_public_key(&pk_args).await.unwrap();
-    let pk = pk_res.public_key;
-    if pk.len() != 32 {
-        ic_cdk::trap("Invalid public key length");
-    }
-    pk.try_into().unwrap()
-}
-
 fn encode_compact(mut val: u64) -> Vec<u8> {
     let mut res = Vec::new();
     loop {
@@ -308,9 +290,10 @@ fn serialize_message(header: [u8; 3], accounts: &Vec<[u8; 32]>, blockhash: [u8; 
     ser
 }
 
-/* ----------- dynamic cycles helper for sign_with_schnorr (existing) ----------- */
+/* ----------- dynamic cycles helper (shared) ----------- */
 
 fn parse_required_cycles(err: &str) -> Option<u128> {
+    // Handle mgmt: "but X cycles are required"
     if let Some(start) = err.find("but ") {
         let rest = &err[start + 4..];
         if let Some(end) = rest.find(" cycles") {
@@ -322,8 +305,52 @@ fn parse_required_cycles(err: &str) -> Option<u128> {
             }
         }
     }
+    // Handle SOL RPC: "TooFewCycles: expected X, received Y"
+    if err.contains("TooFewCycles") {
+        if let Some(start) = err.find("expected ") {
+            let rest = &err[start + 9..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                if let Ok(v) = digits.parse::<u128>() {
+                    return Some(v);
+                }
+            }
+        }
+    }
     None
 }
+
+/* ----------- dynamic schnorr_public_key ----------- */
+
+async fn schnorr_public_key_dynamic(args: &SchnorrPublicKeyArgs) -> Result<SchnorrPublicKeyResult, String> {
+    let mgmt = Principal::management_canister();
+    let arg_bytes = candid::encode_one(args).map_err(|e| format!("PK encode error: {:?}", e))?;
+
+    // start reasonably high; mgmt cost can vary
+    let mut cycles: u128 = 10_000_000_000;
+
+    for attempt in 0..3 {
+        match call_raw128(mgmt, "schnorr_public_key", arg_bytes.clone(), cycles).await {
+            Ok(raw) => {
+                let reply: SchnorrPublicKeyResult =
+                    candid::decode_one(&raw).map_err(|e| format!("PK decode error: {:?}", e))?;
+                return Ok(reply);
+            }
+            Err((_code, msg)) => {
+                if let Some(required) = parse_required_cycles(&msg) {
+                    cycles = required.saturating_add(1_000_000_000);
+                } else if attempt == 0 {
+                    cycles = 30_000_000_000;
+                } else {
+                    return Err(format!("schnorr_public_key error: {}", msg));
+                }
+            }
+        }
+    }
+    Err("schnorr_public_key error: retries exhausted".into())
+}
+
+/* ----------- dynamic sign_with_schnorr (your original) ----------- */
 
 async fn sign_with_schnorr_dynamic(sign_args: &SignWithSchnorrArgs) -> Result<SignWithSchnorrResult, String> {
     let mgmt = Principal::management_canister();
@@ -352,7 +379,59 @@ async fn sign_with_schnorr_dynamic(sign_args: &SignWithSchnorrArgs) -> Result<Si
     Err("Sign error: retries exhausted".into())
 }
 
-/* ------------------------------ ownership guards ------------------------------ */
+/* ----------- dynamic SOL RPC calls ----------- */
+
+async fn call_sol_rpc_dynamic(method: &str, arg_bytes: Vec<u8>, mut cycles: u128) -> Result<Vec<u8>, String> {
+    for attempt in 0..3 {
+        match call_raw128(*SOL_RPC_PRINCIPAL, method, arg_bytes.clone(), cycles).await {
+            Ok(raw) => return Ok(raw),
+            Err((_code, msg)) => {
+                if let Some(required) = parse_required_cycles(&msg) {
+                    cycles = required.saturating_add(1_000_000_000);
+                } else if attempt == 0 {
+                    cycles = cycles.saturating_mul(2);
+                } else {
+                    return Err(format!("{} error: {}", method, msg));
+                }
+            }
+        }
+    }
+    Err(format!("{} error: retries exhausted", method).into())
+}
+
+/* ----------- key derivation helpers now use dynamic PK ----------- */
+
+async fn get_user_sol_pk_for_path(path_seed: Vec<u8>) -> [u8; 32] {
+    let derivation_path: Vec<Vec<u8>> = vec![path_seed.clone()];
+    let pk_args = SchnorrPublicKeyArgs {
+        canister_id: None,
+        derivation_path,
+        key_id: KEY_ID.clone(),
+    };
+    let pk_res = schnorr_public_key_dynamic(&pk_args).await
+        .unwrap_or_else(|e| trap(&format!("schnorr_public_key failed: {}", e)));
+    let pk = pk_res.public_key;
+    if pk.len() != 32 {
+        ic_cdk::trap("Invalid public key length");
+    }
+    pk.try_into().unwrap()
+}
+
+async fn get_user_sol_pk_from_wallet(sol_pubkey: &str) -> [u8; 32] {
+    let pubkey_bytes = match bs58::decode(sol_pubkey).into_vec() {
+        Ok(bytes) if bytes.len() == 32 => bytes,
+        _ => ic_cdk::trap("Invalid Solana pubkey"),
+    };
+    get_user_sol_pk_for_path(pubkey_bytes).await
+}
+
+async fn get_ii_sol_pk_for_caller() -> [u8; 32] {
+    let principal = caller();
+    let seed = principal.as_slice().to_vec(); // stable per-principal
+    get_user_sol_pk_for_path(seed).await
+}
+
+/* ------------------------------ ownership / authorization ------------------------------ */
 
 fn require_owner(sol_pubkey: &str) -> Result<(), String> {
     let caller_txt = caller().to_text();
@@ -363,13 +442,17 @@ fn require_owner(sol_pubkey: &str) -> Result<(), String> {
         None => Err("Unauthorized: link this Solana wallet to your Internet Identity first".into())
     }
 }
-fn ensure_owner_or_trap(sol_pubkey: &str) {
-    if let Err(e) = require_owner(sol_pubkey) {
-        trap(&e);
+
+fn auth_by_phantom_or_owner(sol_pubkey: &str, message: &[u8], signature: &[u8]) -> Result<(), String> {
+    // If Phantom signature is valid, allow (no II needed).
+    if verify_signature(sol_pubkey, message, signature) {
+        return Ok(());
     }
+    // Else require II link.
+    require_owner(sol_pubkey)
 }
 
-/* ------------------------------ SOL RPC calls (unchanged logic) ------------------------------ */
+/* ------------------------------ SOL RPC calls ------------------------------ */
 
 async fn sol_get_balance_lamports(pubkey: String) -> Result<u64, String> {
     let rpc_sources = RpcSources::Default(SolanaCluster::Mainnet);
@@ -383,9 +466,9 @@ async fn sol_get_balance_lamports(pubkey: String) -> Result<u64, String> {
 
     let args = candid::encode_args((rpc_sources, rpc_cfg, params)).map_err(|e| e.to_string())?;
 
-    let cycles: u128 = 2_000_000_000;
-    let raw = call_raw128(*SOL_RPC_PRINCIPAL, "getBalance", args, cycles).await
-        .map_err(|err| format!("getBalance call error: {:?}", err))?;
+    // dynamic cycles
+    let initial_cycles: u128 = 4_000_000_000;
+    let raw = call_sol_rpc_dynamic("getBalance", args, initial_cycles).await?;
 
     let (multi,): (MultiGetBalanceResult,) =
         candid::decode_args(&raw).map_err(|e| format!("getBalance decode error: {:?}", e))?;
@@ -404,12 +487,17 @@ async fn sol_get_balance_lamports(pubkey: String) -> Result<u64, String> {
 
 async fn sol_get_finalized_slot() -> Result<u64, String> {
     let rpc_sources = RpcSources::Default(SolanaCluster::Mainnet);
-    let cfg: Option<GetSlotRpcConfig> = None;
+    // Set rounding_error to 50 slots (~20s) for better consensus
+    let cfg = Some(GetSlotRpcConfig {
+        rounding_error: Some(50),
+        ..Default::default()
+    });
     let params = Some(GetSlotParams { min_context_slot: None, commitment: Some(CommitmentLevel::Finalized) });
     let args = candid::encode_args((rpc_sources, cfg, params)).map_err(|e| e.to_string())?;
-    let cycles: u128 = 2_000_000_000;
-    let raw = call_raw128(*SOL_RPC_PRINCIPAL, "getSlot", args, cycles).await
-        .map_err(|e| format!("getSlot call error: {:?}", e))?;
+
+    let initial_cycles: u128 = 4_000_000_000;
+    let raw = call_sol_rpc_dynamic("getSlot", args, initial_cycles).await?;
+
     let (multi,): (MultiGetSlotResult,) = candid::decode_args(&raw).map_err(|e| format!("getSlot decode error: {:?}", e))?;
     match multi {
         MultiGetSlotResult::Consistent(GetSlotResult::Ok(slot)) => Ok(slot),
@@ -434,9 +522,10 @@ async fn sol_get_blockhash_for_slot(slot: u64) -> Result<String, String> {
         max_supported_transaction_version: None,
     };
     let args = candid::encode_args((rpc_sources, rpc_cfg, params)).map_err(|e| e.to_string())?;
-    let cycles: u128 = 2_000_000_000;
-    let raw = call_raw128(*SOL_RPC_PRINCIPAL, "getBlock", args, cycles).await
-        .map_err(|e| format!("getBlock call error: {:?}", e))?;
+
+    let initial_cycles: u128 = 4_000_000_000;
+    let raw = call_sol_rpc_dynamic("getBlock", args, initial_cycles).await?;
+
     let (multi,): (MultiGetBlockResult,) = candid::decode_args(&raw).map_err(|e| format!("getBlock decode error: {:?}", e))?;
     match multi {
         MultiGetBlockResult::Consistent(GetBlockResult::Ok(Some(block))) => Ok(block.blockhash),
@@ -467,9 +556,10 @@ async fn sol_send_transaction_b64(tx_b64: String) -> Result<String, String> {
     };
 
     let args = candid::encode_args((rpc_sources, rpc_cfg, params)).map_err(|e| e.to_string())?;
-    let cycles: u128 = 2_000_000_000;
-    let raw = call_raw128(*SOL_RPC_PRINCIPAL, "sendTransaction", args, cycles).await
-        .map_err(|e| format!("sendTransaction call error: {:?}", e))?;
+
+    let initial_cycles: u128 = 4_000_000_000;
+    let raw = call_sol_rpc_dynamic("sendTransaction", args, initial_cycles).await?;
+
     let (multi,): (MultiSendTransactionResult,) = candid::decode_args(&raw).map_err(|e| format!("sendTransaction decode error: {:?}", e))?;
     match multi {
         MultiSendTransactionResult::Consistent(SendTransactionResult::Ok(sig)) => Ok(sig),
@@ -484,12 +574,14 @@ async fn sol_send_transaction_b64(tx_b64: String) -> Result<String, String> {
     }
 }
 
-/* ------------------------------ new public methods ------------------------------ */
+/* ------------------------------ public methods ------------------------------ */
 
 #[query]
 fn whoami() -> String {
     caller().to_text()
 }
+
+/* ---------- link/unlink (unchanged) ---------- */
 
 #[update]
 fn unlink_sol_pubkey() -> String {
@@ -509,13 +601,11 @@ fn unlink_sol_pubkey() -> String {
 fn link_sol_pubkey(sol_pubkey: String, signature: Vec<u8>) -> String {
     if sol_pubkey.is_empty() { return "Missing pubkey".into(); }
     let principal_txt = caller().to_text();
-    // Message to be signed by Phantom = "link <principal>"
     let msg = format!("link {}", principal_txt);
     if !verify_signature(&sol_pubkey, msg.as_bytes(), &signature) {
         return "Invalid signature".into();
     }
 
-    // If this sol_pubkey is already owned, check who owns it
     if let Some(owner) = OWNER_MAP.with(|m| m.borrow().get(&sol_pubkey)) {
         if owner == principal_txt {
             return "Already linked".into();
@@ -524,7 +614,6 @@ fn link_sol_pubkey(sol_pubkey: String, signature: Vec<u8>) -> String {
         }
     }
 
-    // If this principal already linked to another sol_pubkey, reject
     if let Some(existing_pk) = PRINCIPAL_MAP.with(|m| m.borrow().get(&principal_txt)) {
         if existing_pk != sol_pubkey {
             return format!("This Internet Identity is already linked to {}", existing_pk);
@@ -534,7 +623,6 @@ fn link_sol_pubkey(sol_pubkey: String, signature: Vec<u8>) -> String {
     OWNER_MAP.with(|m| { m.borrow_mut().insert(sol_pubkey.clone(), principal_txt.clone()); });
     PRINCIPAL_MAP.with(|m| { m.borrow_mut().insert(principal_txt.clone(), sol_pubkey.clone()); });
 
-    // Initialize nonce if missing
     NONCE_MAP.with(|m| {
         if m.borrow().get(&sol_pubkey).is_none() {
             m.borrow_mut().insert(sol_pubkey.clone(), 0);
@@ -544,19 +632,220 @@ fn link_sol_pubkey(sol_pubkey: String, signature: Vec<u8>) -> String {
     "Linked".into()
 }
 
-/* ------------------------------ existing public methods (now auth-guarded) ------------------------------ */
+/* ---------- II-only variants ---------- */
+
+#[update]
+async fn get_sol_deposit_address_ii() -> String {
+    let user_pk = get_ii_sol_pk_for_caller().await;
+    bs58::encode(user_pk).into_string()
+}
+
+#[update]
+async fn get_deposit_address_ii() -> String {
+    let sol_pk_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
+    let subaccount = derive_subaccount(&sol_pk_str);
+    let account = AccountIdentifier::new(&canister_id(), &subaccount);
+    hex::encode(account.as_ref())
+}
+
+#[update]
+async fn get_sol_balance_ii() -> u64 {
+    let pubkey_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
+    match sol_get_balance_lamports(pubkey_str).await {
+        Ok(lamports) => lamports,
+        Err(e) => {
+            ic_cdk::println!("get_sol_balance_ii error: {}", e);
+            0
+        }
+    }
+}
+
+#[update]
+async fn get_balance_ii() -> u64 {
+    let sol_pk_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
+    let subaccount = derive_subaccount(&sol_pk_str);
+    let account = AccountIdentifier::new(&canister_id(), &subaccount);
+    let args = ic_ledger_types::AccountBalanceArgs { account };
+    ic_ledger_types::account_balance(
+        MAINNET_LEDGER_CANISTER_ID,
+        &args,
+    ).await.unwrap_or(Tokens::from_e8s(0)).e8s()
+}
+
+#[update]
+async fn get_nonce_ii() -> u64 {
+    let sol_pk_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
+    NONCE_MAP.with(|map| {
+        let mut m = map.borrow_mut();
+        let cur = m.get(&sol_pk_str).unwrap_or(0);
+        if cur == 0 {
+            m.insert(sol_pk_str.clone(), 0);
+        }
+        cur
+    })
+}
+
+#[update]
+async fn transfer_ii(to: String, amount: u64) -> String {
+    let sol_pk_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
+
+    let current_nonce = get_nonce_ii().await;
+
+    // service fee in ICP
+    let subaccount = derive_subaccount(&sol_pk_str);
+    let service_args = TransferArgs {
+        memo: Memo(0),
+        amount: Tokens::from_e8s(SERVICE_FEE),
+        fee: DEFAULT_FEE,
+        from_subaccount: Some(subaccount),
+        to: *SERVICE_ACCOUNT,
+        created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
+    };
+    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &service_args).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => return format!("Service fee transfer failed: {:?}", e),
+        Err(e) => return format!("Call error for service fee: {:?}", e),
+    }
+
+    let to_account = match AccountIdentifier::from_hex(&to) {
+        Ok(ai) => ai,
+        Err(_) => return "Invalid to address".into(),
+    };
+
+    let transfer_args = TransferArgs {
+        memo: Memo(0),
+        amount: Tokens::from_e8s(amount),
+        fee: DEFAULT_FEE,
+        from_subaccount: Some(subaccount),
+        to: to_account,
+        created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
+    };
+    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await {
+        Ok(Ok(_)) => {
+            NONCE_MAP.with(|map| {
+                let mut map = map.borrow_mut();
+                map.insert(sol_pk_str.clone(), current_nonce + 1);
+            });
+            "Transfer successful".into()
+        }
+        Ok(Err(e)) => format!("Transfer failed: {:?}", e),
+        Err(e) => format!("Call error: {:?}", e),
+    }
+}
+
+#[update]
+async fn transfer_sol_ii(to: String, amount: u64) -> String {
+    let current_nonce = get_nonce_ii().await;
+
+    // service fee in ICP before doing SOL tx
+    let sol_pk_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
+    let subaccount = derive_subaccount(&sol_pk_str);
+
+    let service_args = TransferArgs {
+        memo: Memo(0),
+        amount: Tokens::from_e8s(SERVICE_FEE_SOL),
+        fee: DEFAULT_FEE,
+        from_subaccount: Some(subaccount),
+        to: *SERVICE_ACCOUNT,
+        created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
+    };
+    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &service_args).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => return format!("Service fee transfer failed: {:?}", e),
+        Err(e) => return format!("Call error for service fee: {:?}", e),
+    }
+
+    // build SOL tx (same as Phantom flow but using II-derived key)
+    let slot = match sol_get_finalized_slot().await {
+        Ok(s) => s,
+        Err(e) => return format!("Failed to get slot: {}", e),
+    };
+    let blockhash_b58 = match sol_get_blockhash_for_slot(slot).await {
+        Ok(h) => h,
+        Err(e) => return format!("Failed to get blockhash: {}", e),
+    };
+    let blockhash: [u8; 32] = match bs58::decode(&blockhash_b58).into_vec() {
+        Ok(v) => match v.try_into() { Ok(a) => a, Err(_) => return "Invalid blockhash".into() },
+        Err(_) => return "Invalid blockhash".into(),
+    };
+
+    let from_pk = get_ii_sol_pk_for_caller().await;
+    let to_pk: [u8; 32] = match bs58::decode(&to).into_vec() {
+        Ok(v) => match v.try_into() { Ok(a) => a, Err(_) => return "Invalid to address".into() },
+        Err(_) => return "Invalid to address".into(),
+    };
+    let system_pk = [0u8; 32]; // system program = 111111... => 32 zero bytes
+    let accounts = vec![from_pk, to_pk, system_pk];
+
+    let header = [1u8, 0u8, 1u8];
+
+    let mut data = Vec::new();
+    data.extend(2u32.to_le_bytes()); // SystemInstruction::Transfer
+    data.extend(amount.to_le_bytes()); // lamports
+
+    let instrs = vec![CompiledInstrLike { prog_idx: 2, accts: vec![0, 1], data }];
+
+    let msg_ser = serialize_message(header, &accounts, blockhash, &instrs);
+
+    let sign_args = SignWithSchnorrArgs {
+        message: msg_ser.clone(),
+        derivation_path: vec![caller().as_slice().to_vec()],
+        key_id: KEY_ID.clone(),
+        aux: None,
+    };
+
+    let sig_reply = match sign_with_schnorr_dynamic(&sign_args).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+
+    let mut tx_ser = encode_compact(1);
+    tx_ser.extend(&sig_reply.signature);
+    tx_ser.extend(&msg_ser);
+    let tx_b64 = general_purpose::STANDARD.encode(tx_ser);
+
+    let txid = match sol_send_transaction_b64(tx_b64).await {
+        Ok(sig) => sig,
+        Err(e) => return format!("Send failed: {}", e),
+    };
+
+    NONCE_MAP.with(|map| {
+        let mut map = map.borrow_mut();
+        map.insert(sol_pk_str.clone(), current_nonce + 1);
+    });
+
+    format!("Transfer successful: txid {}", txid)
+}
+
+/* ---------- Public (read) helpers ---------- */
+
+#[update]
+async fn get_balance(sol_pubkey: String) -> u64 {
+    let subaccount = derive_subaccount(&sol_pubkey);
+    let account = AccountIdentifier::new(&canister_id(), &subaccount);
+    let args = ic_ledger_types::AccountBalanceArgs { account };
+    ic_ledger_types::account_balance(
+        MAINNET_LEDGER_CANISTER_ID,
+        &args,
+    ).await.unwrap_or(Tokens::from_e8s(0)).e8s()
+}
+
+#[query]
+fn get_deposit_address(sol_pubkey: String) -> String {
+    let subaccount = derive_subaccount(&sol_pubkey);
+    let account = AccountIdentifier::new(&canister_id(), &subaccount);
+    hex::encode(account.as_ref())
+}
 
 #[update]
 async fn get_sol_deposit_address(sol_pubkey: String) -> String {
-    ensure_owner_or_trap(&sol_pubkey);
-    let user_pk = get_user_sol_pk(&sol_pubkey).await;
+    let user_pk = get_user_sol_pk_from_wallet(&sol_pubkey).await;
     bs58::encode(user_pk).into_string()
 }
 
 #[update]
 async fn get_sol_balance(sol_pubkey: String) -> u64 {
-    ensure_owner_or_trap(&sol_pubkey);
-    let user_pk = get_user_sol_pk(&sol_pubkey).await;
+    let user_pk = get_user_sol_pk_from_wallet(&sol_pubkey).await;
     let pubkey_str = bs58::encode(user_pk).into_string();
     match sol_get_balance_lamports(pubkey_str).await {
         Ok(lamports) => lamports,
@@ -567,18 +856,93 @@ async fn get_sol_balance(sol_pubkey: String) -> u64 {
     }
 }
 
+/* ---------- Nonce, PID ---------- */
+
+#[query]
+fn get_nonce(sol_pubkey: String) -> u64 {
+    NONCE_MAP.with(|map| map.borrow().get(&sol_pubkey).unwrap_or(0))
+}
+
+#[query]
+fn get_pid(sol_pubkey: String) -> String {
+    let pubkey_bytes = match bs58::decode(sol_pubkey).into_vec() {
+        Ok(bytes) if bytes.len() == 32 => bytes,
+        _ => return "Invalid pubkey".to_string(),
+    };
+    let mut hasher = Sha224::new();
+    hasher.update(&pubkey_bytes);
+    let hash = hasher.finalize();
+    let mut principal_bytes: Vec<u8> = hash.to_vec();
+    principal_bytes.push(0x02); // Ed25519 type byte
+    Principal::from_slice(&principal_bytes).to_text()
+}
+
+/* ---------- Transfers (Phantom or II link) ---------- */
+
+#[update]
+async fn transfer(to: String, amount: u64, sol_pubkey: String, signature: Vec<u8>, nonce: u64) -> String {
+    let current_nonce = get_nonce(sol_pubkey.clone());
+    if nonce != current_nonce {
+        return "Invalid nonce".to_string();
+    }
+
+    let message = format!("transfer to {} amount {} nonce {} service_fee {}", to, amount, nonce, SERVICE_FEE);
+    if let Err(e) = auth_by_phantom_or_owner(&sol_pubkey, message.as_bytes(), &signature) {
+        return e;
+    }
+
+    let subaccount = derive_subaccount(&sol_pubkey);
+
+    let service_args = TransferArgs {
+        memo: Memo(0),
+        amount: Tokens::from_e8s(SERVICE_FEE),
+        fee: DEFAULT_FEE,
+        from_subaccount: Some(subaccount),
+        to: *SERVICE_ACCOUNT,
+        created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
+    };
+    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &service_args).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => return format!("Service fee transfer failed: {:?}", e),
+        Err(e) => return format!("Call error for service fee: {:?}", e),
+    }
+
+    let to_account = match AccountIdentifier::from_hex(&to) {
+        Ok(ai) => ai,
+        Err(_) => return "Invalid to address".into(),
+    };
+
+    let transfer_args = TransferArgs {
+        memo: Memo(0),
+        amount: Tokens::from_e8s(amount),
+        fee: DEFAULT_FEE,
+        from_subaccount: Some(subaccount),
+        to: to_account,
+        created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
+    };
+    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await {
+        Ok(Ok(_bh)) => {
+            NONCE_MAP.with(|map| {
+                let mut map = map.borrow_mut();
+                map.insert(sol_pubkey.clone(), current_nonce + 1);
+            });
+            "Transfer successful".into()
+        }
+        Ok(Err(e)) => format!("Transfer failed: {:?}", e),
+        Err(e) => format!("Call error: {:?}", e),
+    }
+}
+
 #[update]
 async fn transfer_sol(to: String, amount: u64, sol_pubkey: String, signature: Vec<u8>, nonce: u64) -> String {
-    ensure_owner_or_trap(&sol_pubkey);
-
     let current_nonce = get_nonce(sol_pubkey.clone());
     if nonce != current_nonce {
         return "Invalid nonce".to_string();
     }
 
     let message = format!("transfer_sol to {} amount {} nonce {} service_fee {}", to, amount, nonce, SERVICE_FEE_SOL).into_bytes();
-    if !verify_signature(&sol_pubkey, &message, &signature) {
-        return "Invalid signature".to_string();
+    if let Err(e) = auth_by_phantom_or_owner(&sol_pubkey, &message, &signature) {
+        return e;
     }
 
     let subaccount = derive_subaccount(&sol_pubkey);
@@ -610,7 +974,7 @@ async fn transfer_sol(to: String, amount: u64, sol_pubkey: String, signature: Ve
         Err(_) => return "Invalid blockhash".into(),
     };
 
-    let from_pk = get_user_sol_pk(&sol_pubkey).await;
+    let from_pk = get_user_sol_pk_from_wallet(&sol_pubkey).await;
     let to_pk: [u8; 32] = match bs58::decode(&to).into_vec() {
         Ok(v) => match v.try_into() { Ok(a) => a, Err(_) => return "Invalid to address".into() },
         Err(_) => return "Invalid to address".into(),
@@ -660,106 +1024,6 @@ async fn transfer_sol(to: String, amount: u64, sol_pubkey: String, signature: Ve
     });
 
     format!("Transfer successful: txid {}", txid)
-}
-
-#[update]
-async fn transfer(to: String, amount: u64, sol_pubkey: String, signature: Vec<u8>, nonce: u64) -> String {
-    ensure_owner_or_trap(&sol_pubkey);
-
-    let current_nonce = get_nonce(sol_pubkey.clone());
-    if nonce != current_nonce {
-        return "Invalid nonce".to_string();
-    }
-
-    let message = format!("transfer to {} amount {} nonce {} service_fee {}", to, amount, nonce, SERVICE_FEE);
-    if !verify_signature(&sol_pubkey, message.as_bytes(), &signature) {
-        return "Invalid signature".into();
-    }
-
-    let subaccount = derive_subaccount(&sol_pubkey);
-
-    // service fee in ICP
-    let service_args = TransferArgs {
-        memo: Memo(0),
-        amount: Tokens::from_e8s(SERVICE_FEE),
-        fee: DEFAULT_FEE,
-        from_subaccount: Some(subaccount),
-        to: *SERVICE_ACCOUNT,
-        created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
-    };
-    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &service_args).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => return format!("Service fee transfer failed: {:?}", e),
-        Err(e) => return format!("Call error for service fee: {:?}", e),
-    }
-
-    // parse destination
-    let to_account = match AccountIdentifier::from_hex(&to) {
-        Ok(ai) => ai,
-        Err(_) => return "Invalid to address".into(),
-    };
-
-    let transfer_args = TransferArgs {
-        memo: Memo(0),
-        amount: Tokens::from_e8s(amount),
-        fee: DEFAULT_FEE,
-        from_subaccount: Some(subaccount),
-        to: to_account,
-        created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
-    };
-    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await {
-        Ok(Ok(_bh)) => {
-            NONCE_MAP.with(|map| {
-                let mut map = map.borrow_mut();
-                map.insert(sol_pubkey.clone(), current_nonce + 1);
-            });
-            "Transfer successful".into()
-        }
-        Ok(Err(e)) => format!("Transfer failed: {:?}", e),
-        Err(e) => format!("Call error: {:?}", e),
-    }
-}
-
-#[query]
-fn get_deposit_address(sol_pubkey: String) -> String {
-    ensure_owner_or_trap(&sol_pubkey);
-    let subaccount = derive_subaccount(&sol_pubkey);
-    let account = AccountIdentifier::new(&canister_id(), &subaccount);
-    hex::encode(account.as_ref())
-}
-
-#[update]
-async fn get_balance(sol_pubkey: String) -> u64 {
-    ensure_owner_or_trap(&sol_pubkey);
-    let subaccount = derive_subaccount(&sol_pubkey);
-    let account = AccountIdentifier::new(&canister_id(), &subaccount);
-    let args = ic_ledger_types::AccountBalanceArgs { account };
-    ic_ledger_types::account_balance(
-        MAINNET_LEDGER_CANISTER_ID,
-        &args,
-    ).await.unwrap_or(Tokens::from_e8s(0)).e8s()
-}
-
-#[query]
-fn get_nonce(sol_pubkey: String) -> u64 {
-    ensure_owner_or_trap(&sol_pubkey);
-    NONCE_MAP.with(|map| map.borrow().get(&sol_pubkey).unwrap_or(0))
-}
-
-#[query]
-fn get_pid(sol_pubkey: String) -> String {
-    ensure_owner_or_trap(&sol_pubkey);
-
-    let pubkey_bytes = match bs58::decode(sol_pubkey).into_vec() {
-        Ok(bytes) if bytes.len() == 32 => bytes,
-        _ => return "Invalid pubkey".to_string(),
-    };
-    let mut hasher = Sha224::new();
-    hasher.update(&pubkey_bytes);
-    let hash = hasher.finalize();
-    let mut principal_bytes: Vec<u8> = hash.to_vec();
-    principal_bytes.push(0x02); // Ed25519 type byte
-    Principal::from_slice(&principal_bytes).to_text()
 }
 
 export_candid!();

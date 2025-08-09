@@ -8,25 +8,34 @@ export const idlFactory = ({ IDL }) =>
     link_sol_pubkey: IDL.Func([IDL.Text, IDL.Vec(IDL.Nat8)], [IDL.Text], []),
     unlink_sol_pubkey: IDL.Func([], [IDL.Text], []),
 
-    // query methods
+    // public reads
     get_deposit_address: IDL.Func([IDL.Text], [IDL.Text], ['query']),
+    get_balance: IDL.Func([IDL.Text], [IDL.Nat64], []),
     get_nonce: IDL.Func([IDL.Text], [IDL.Nat64], ['query']),
     get_pid: IDL.Func([IDL.Text], [IDL.Text], ['query']),
+    get_sol_deposit_address: IDL.Func([IDL.Text], [IDL.Text], []),
+    get_sol_balance: IDL.Func([IDL.Text], [IDL.Nat64], []),
 
-    // update methods
-    get_balance: IDL.Func([IDL.Text], [IDL.Nat64], []),
+    // transfers (phantom or II link)
     transfer: IDL.Func(
       [IDL.Text, IDL.Nat64, IDL.Text, IDL.Vec(IDL.Nat8), IDL.Nat64],
       [IDL.Text],
       []
     ),
-    get_sol_deposit_address: IDL.Func([IDL.Text], [IDL.Text], []),
-    get_sol_balance: IDL.Func([IDL.Text], [IDL.Nat64], []),
     transfer_sol: IDL.Func(
       [IDL.Text, IDL.Nat64, IDL.Text, IDL.Vec(IDL.Nat8), IDL.Nat64],
       [IDL.Text],
       []
     ),
+
+    // II-only endpoints
+    get_sol_deposit_address_ii: IDL.Func([], [IDL.Text], []),
+    get_deposit_address_ii: IDL.Func([], [IDL.Text], []),
+    get_sol_balance_ii: IDL.Func([], [IDL.Nat64], []),
+    get_balance_ii: IDL.Func([], [IDL.Nat64], []),
+    get_nonce_ii: IDL.Func([], [IDL.Nat64], []),
+    transfer_ii: IDL.Func([IDL.Text, IDL.Nat64], [IDL.Text], []),
+    transfer_sol_ii: IDL.Func([IDL.Text, IDL.Nat64], [IDL.Text], []),
   });
 
 export default idlFactory;
