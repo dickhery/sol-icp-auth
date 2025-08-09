@@ -12,6 +12,7 @@
   "license": "ISC",
   "dependencies": {
     "@dfinity/agent": "^3.1.0",
+    "@dfinity/auth-client": "^3.1.0",
     "@dfinity/candid": "^3.1.0",
     "@dfinity/identity": "^3.1.0",
     "@dfinity/principal": "^3.1.0"
