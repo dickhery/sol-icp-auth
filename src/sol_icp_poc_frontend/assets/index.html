@@ -9,6 +9,11 @@
     .err { color: #b00020; }
     .muted { color: #666; }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
+    #latest-tx { margin-top: 8px; font-family: sans-serif; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+    #latest-tx.ok { color: #0a7f2e; border-color: #0a7f2e; }
+    #latest-tx.warn { color: #a66a00; border-color: #a66a00; }
+    #latest-tx.err { color: #b00020; border-color: #b00020; }
+    #latest-tx.muted { color: #666; border-color: #ccc; }
   </style>
 </head>
 <body>
@@ -55,6 +60,9 @@
   <input id="to_sol" placeholder="To Solana Address (base58)" />
   <input id="amount_sol" placeholder="Amount (SOL)" type="number" step="0.000000001" />
   <button id="send_sol">Send SOL</button>
+
+  <h3>Latest Transaction</h3>
+  <div id="latest-tx" class="muted">No transactions yet.</div>
 
   <div id="alerts"></div>
 

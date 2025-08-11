@@ -33,8 +33,8 @@ const showMuted = (m) => alertSet("muted", m);
 
 function normalizeAgentError(e) {
   const s = (e?.message || String(e || "")).trim();
-  if (/Request timed out after 300000 msec/i.test(s)) {
-    return "Request timed out. This may be due to network delays or consensus issues. Retry in a few seconds, or check balances later as the TX may still complete.";
+  if (/Request timed out after/i.test(s)) {
+    return "Request timed out. This may be due to network delays or consensus issues. The operation may still succeed—refresh balances in a few seconds.";
   }
   if (/processing/i.test(s) && /Request ID:/i.test(s)) {
     return "The network is processing the call. Refresh balances shortly.";
@@ -55,6 +55,15 @@ function friendlyTry(fn, onErr) {
     else showErr(msg);
     throw e; // keep behavior for upstream catch/finally
   });
+}
+
+// Add timeout wrapper for calls
+async function withTimeout(promise, ms = 600000) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`Timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
 async function makeAgentAndActor() {
@@ -112,19 +121,25 @@ async function refreshSolBalance(force = false) {
   if (button) { button.disabled = true; }
 
   try {
+    let lam;
     if (authMode === "ii") {
-      const lam = await friendlyTry(() => actor.get_sol_balance_ii(), (m) => showWarn(m));
-      uiSet("sol_balance", `SOL Balance: ${(Number(lam)/1e9).toFixed(9)} SOL`);
-      showMuted("SOL balance updated.");
+      lam = await withTimeout(friendlyTry(() => actor.get_sol_balance_ii(), (m) => showWarn(m)));
     } else if (authMode === "phantom") {
       if (!solPubkey) return showWarn("Connect Phantom first");
-      const lam = await friendlyTry(() => actor.get_sol_balance(solPubkey), (m) => showWarn(m));
-      uiSet("sol_balance", `SOL Balance: ${(Number(lam)/1e9).toFixed(9)} SOL`);
-      showMuted("SOL balance updated.");
+      lam = await withTimeout(friendlyTry(() => actor.get_sol_balance(solPubkey), (m) => showWarn(m)));
     } else {
       showWarn("Pick an auth mode to refresh SOL.");
+      return;
     }
+    uiSet("sol_balance", `SOL Balance: ${(Number(lam)/1e9).toFixed(9)} SOL`);
+    showMuted("SOL balance updated.");
     lastSolRefreshMs = Date.now();
+  } catch (e) {
+    if (String(e).includes("Timed out")) {
+      showWarn("SOL refresh timed out. Network may be slow—try again in a minute.");
+    } else {
+      showErr(normalizeAgentError(e));
+    }
   } finally {
     solRefreshInFlight = false;
     if (button) { button.disabled = false; }
@@ -147,19 +162,25 @@ async function refreshIcpBalance(force = false) {
   if (button) { button.disabled = true; }
 
   try {
+    let e8s;
     if (authMode === "ii") {
-      const e8s = await friendlyTry(() => actor.get_balance_ii(), (m) => showWarn(m));
-      uiSet("balance", `ICP Balance: ${(Number(e8s)/1e8).toFixed(8)} ICP`);
-      showMuted("ICP balance updated.");
+      e8s = await withTimeout(friendlyTry(() => actor.get_balance_ii(), (m) => showWarn(m)));
     } else if (authMode === "phantom") {
       if (!solPubkey) return showWarn("Connect Phantom first");
-      const e8s = await friendlyTry(() => actor.get_balance(solPubkey), (m) => showWarn(m));
-      uiSet("balance", `ICP Balance: ${(Number(e8s)/1e8).toFixed(8)} ICP`);
-      showMuted("ICP balance updated.");
+      e8s = await withTimeout(friendlyTry(() => actor.get_balance(solPubkey), (m) => showWarn(m)));
     } else {
       showWarn("Pick an auth mode to refresh ICP.");
+      return;
     }
+    uiSet("balance", `ICP Balance: ${(Number(e8s)/1e8).toFixed(8)} ICP`);
+    showMuted("ICP balance updated.");
     lastIcpRefreshMs = Date.now();
+  } catch (e) {
+    if (String(e).includes("Timed out")) {
+      showWarn("ICP refresh timed out. Network may be slow—try again in a minute.");
+    } else {
+      showErr(normalizeAgentError(e));
+    }
   } finally {
     icpRefreshInFlight = false;
     if (button) { button.disabled = false; }
@@ -325,7 +346,7 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
     button.disabled = true; button.innerText = 'Processing... (may take 30s)';
 
     try {
-      const result = await friendlyTry(() => actor.transfer_ii(to, amount), (m) => showWarn(m));
+      const result = await withTimeout(friendlyTry(() => actor.transfer_ii(to, amount), (m) => showWarn(m)));
       displayResult(result);
       await refreshBothBalances(true);
       if (result.startsWith("Transfer successful")) {
@@ -336,7 +357,12 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
         showWarn(result);
       }
     } catch (err) {
-      showErr(`ICP send error: ${normalizeAgentError(err)}`);
+      if (String(err).includes("Timed out")) {
+        showMuted("ICP send submitted, but timed out. It may still succeed—refresh balances shortly.");
+        setTimeout(() => refreshBothBalances(true), 10000); // auto-refresh after 10s
+      } else {
+        showErr(`ICP send error: ${normalizeAgentError(err)}`);
+      }
     } finally {
       button.disabled = false; button.innerText = 'Send ICP';
     }
@@ -367,7 +393,7 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
       const signed = await provider.signMessage(encodedMessage, "utf8");
       const signature = signed.signature;
 
-      const result = await friendlyTry(() => actor.transfer(to, amount, solPubkey, Array.from(signature), nonce), (m) => showWarn(m));
+      const result = await withTimeout(friendlyTry(() => actor.transfer(to, amount, solPubkey, Array.from(signature), nonce), (m) => showWarn(m)));
       displayResult(result);
       await refreshBothBalances(true);
 
@@ -379,7 +405,12 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
         showWarn(result);
       }
     } catch (err) {
-      showErr(`ICP send error: ${normalizeAgentError(err)}`);
+      if (String(err).includes("Timed out")) {
+        showMuted("ICP send submitted, but timed out. It may still succeed—refresh balances shortly.");
+        setTimeout(() => refreshBothBalances(true), 10000);
+      } else {
+        showErr(`ICP send error: ${normalizeAgentError(err)}`);
+      }
     } finally {
       button.disabled = false;
       button.innerText = 'Send ICP';
@@ -404,7 +435,9 @@ document.getElementById("send_sol").onclick = async () => {
   }
   const amountLam = BigInt(Math.round(parseFloat(amountSOL) * 1e9));
 
+  let initialNonce;
   if (authMode === "ii") {
+    initialNonce = await actor.get_nonce_ii();
     const totalSOL = parseFloat(amountSOL) + solanaFeeApprox;
     const totalIcpForSol = serviceFeeSolICP + icpLedgerFee;
     const confirmMsg = `Confirm SOL transaction (II mode):
@@ -421,7 +454,7 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
     button.disabled = true; button.innerText = 'Processing... (may take 30s)';
 
     try {
-      const result = await friendlyTry(() => actor.transfer_sol_ii(to_sol, amountLam), (m) => showWarn(m));
+      const result = await withTimeout(friendlyTry(() => actor.transfer_sol_ii(to_sol, amountLam), (m) => showWarn(m)));
       displayResult(result);
       await refreshBothBalances(true);
       if (result.startsWith("Transfer successful")) {
@@ -432,7 +465,21 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
         showWarn(result);
       }
     } catch (err) {
-      showErr(`SOL send error: ${normalizeAgentError(err)}`);
+      if (String(err).includes("Timed out")) {
+        showMuted("SOL send submitted, but timed out. Checking for completion...");
+        const success = await pollNonceForChange(initialNonce);
+        if (success) {
+          displayResult("Transfer successful (confirmed via nonce change)");
+          await refreshBothBalances(true);
+          document.getElementById("to_sol").value = '';
+          document.getElementById("amount_sol").value = '';
+          showOk("SOL transfer complete (delayed confirmation). Balances updated.");
+        } else {
+          showWarn("SOL send timed out and no confirmation detected. Check explorer or retry.");
+        }
+      } else {
+        showErr(`SOL send error: ${normalizeAgentError(err)}`);
+      }
     } finally {
       button.disabled = false; button.innerText = 'Send SOL';
     }
@@ -442,7 +489,7 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
   if (authMode === "phantom") {
     if (!solPubkey) return alert("Connect first");
 
-    const nonce = await actor.get_nonce(solPubkey);
+    initialNonce = await actor.get_nonce(solPubkey);
 
     const amountSOLNum = parseFloat(amountSOL);
     const totalSOL = amountSOLNum + solanaFeeApprox;
@@ -457,7 +504,7 @@ Total SOL deduction: ${totalSOL.toFixed(9)} SOL
 Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
     if (!window.confirm(confirmMsg)) return;
 
-    const message = `transfer_sol to ${to_sol} amount ${amountLam} nonce ${nonce} service_fee ${serviceFeeSolE8s}`;
+    const message = `transfer_sol to ${to_sol} amount ${amountLam} nonce ${initialNonce} service_fee ${serviceFeeSolE8s}`;
     const encodedMessage = new TextEncoder().encode(message);
 
     const button = document.getElementById("send_sol");
@@ -467,7 +514,7 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
       const signed = await provider.signMessage(encodedMessage, "utf8");
       const signature = signed.signature;
 
-      const result = await friendlyTry(() => actor.transfer_sol(to_sol, amountLam, solPubkey, Array.from(signature), nonce), (m) => showWarn(m));
+      const result = await withTimeout(friendlyTry(() => actor.transfer_sol(to_sol, amountLam, solPubkey, Array.from(signature), initialNonce), (m) => showWarn(m)));
       displayResult(result);
       await refreshBothBalances(true);
 
@@ -479,7 +526,21 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
         showWarn(result);
       }
     } catch (err) {
-      showErr(`SOL send error: ${normalizeAgentError(err)}`);
+      if (String(err).includes("Timed out")) {
+        showMuted("SOL send submitted, but timed out. Checking for completion...");
+        const success = await pollNonceForChange(initialNonce);
+        if (success) {
+          displayResult("Transfer successful (confirmed via nonce change)");
+          await refreshBothBalances(true);
+          document.getElementById("to_sol").value = '';
+          document.getElementById("amount_sol").value = '';
+          showOk("SOL transfer complete (delayed confirmation). Balances updated.");
+        } else {
+          showWarn("SOL send timed out and no confirmation detected. Check explorer or retry.");
+        }
+      } else {
+        showErr(`SOL send error: ${normalizeAgentError(err)}`);
+      }
     } finally {
       button.disabled = false;
       button.innerText = 'Send SOL';
@@ -487,15 +548,29 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
   }
 };
 
+// Polling function for nonce change (to confirm TX success after timeout)
+async function pollNonceForChange(initialNonce, maxAttempts = 5, intervalMs = 10000) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    try {
+      const currentNonce = authMode === "ii" ? await actor.get_nonce_ii() : await actor.get_nonce(solPubkey);
+      if (currentNonce > initialNonce) {
+        return true; // success
+      }
+    } catch {} // ignore poll errors
+    showMuted(`Polling for confirmation (${attempt}/${maxAttempts})...`);
+  }
+  return false; // no change detected
+}
+
 // Updated displayResult (parse based on content)
 function displayResult(res) {
-  const alerts = document.getElementById('alerts');
-  const div = document.createElement('div');
+  const txDiv = document.getElementById('latest-tx');
+  let html = res;
+  let cls = 'muted';
 
   if (res.includes('successful')) {
-    div.className = 'ok';
-    let html = res;
-
+    cls = 'ok';
     // ICP: parse block
     const blockMatch = res.match(/block (\d+)/);
     if (blockMatch) {
@@ -511,19 +586,18 @@ function displayResult(res) {
       const link = `https://explorer.solana.com/tx/${txid}`;
       html += ` <a href="${link}" target="_blank">View on Solana Explorer</a>`;
     }
-
-    div.innerHTML = html;
   } else if (res.includes('failed')) {
-    div.className = 'err';
-    div.textContent = res;
-  } else {
-    div.className = 'muted';
-    div.textContent = res;
+    cls = 'err';
+  } else if (res.includes('error')) {
+    cls = 'warn';
   }
-  alerts.prepend(div);
+
+  txDiv.className = cls;
+  txDiv.innerHTML = html;
 }
 
 // ---- Boot ----
 await makeAgentAndActor();
 uiSet("mode_status", "Pick a mode: Internet Identity or Phantom");
 showMuted("Ready.");
+document.getElementById("latest-tx").innerHTML = "No transactions yet.";
