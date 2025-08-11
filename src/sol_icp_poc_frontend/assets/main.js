@@ -194,6 +194,12 @@ async function refreshBothBalances(force = false) {
   ]);
 }
 
+// Clear all dynamic text/inputs except latest-tx
+function clearAllExceptTx() {
+  ["deposit", "balance", "sol_deposit", "sol_balance", "pid", "pubkey", "ii_status", "status"].forEach(id => uiSet(id, ""));
+  ["to", "amount", "to_sol", "amount_sol"].forEach(id => document.getElementById(id).value = "");
+}
+
 // ---- Auth mode switching ----
 function enterIiUi() {
   setVisible("ii_block", true);
@@ -209,10 +215,10 @@ function enterPhantomUi() {
 }
 
 document.getElementById("mode_ii").onclick = async () => {
+  clearAllExceptTx();  // Clear on switch
   if (authMode === "phantom") {
     try { await provider.disconnect(); } catch {}
     solPubkey = null;
-    ["pubkey","sol_deposit","sol_balance"].forEach(id => uiSet(id, ""));
   }
   authMode = "ii";
   await initAuthIfNeeded();
@@ -221,6 +227,7 @@ document.getElementById("mode_ii").onclick = async () => {
 };
 
 document.getElementById("mode_phantom").onclick = async () => {
+  clearAllExceptTx();  // Clear on switch
   if (authMode === "ii") {
     if (!authClient) await initAuthIfNeeded();
     try { await authClient.logout(); } catch {}
