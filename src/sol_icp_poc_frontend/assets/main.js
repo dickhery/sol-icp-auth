@@ -58,7 +58,7 @@ function friendlyTry(fn, onErr) {
 }
 
 // Add timeout wrapper for calls
-async function withTimeout(promise, ms = 600000) {
+async function withTimeout(promise, ms = 900000) {  // Increased to 15 minutes
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(`Timed out after ${ms} ms`)), ms);
@@ -324,28 +324,26 @@ document.getElementById("link_wallet").onclick = async () => {
 };
 
 // ---- ICP send ----
+let sendingIcp = false;  // Global lock to prevent concurrent sends
 document.getElementById("send").onclick = async () => {
-  const to = document.getElementById("to").value;
-  const amountICP = document.getElementById("amount").value;
-  if (isNaN(parseFloat(amountICP)) || parseFloat(amountICP) < 0) {
-    return alert("Invalid amount");
-  }
-  const amount = BigInt(Math.round(parseFloat(amountICP) * 1e8));
+  if (sendingIcp) return showWarn("ICP send already in progress.");
+  sendingIcp = true;
+  const button = document.getElementById("send");
+  button.disabled = true; button.innerText = 'Processing... (may take 30s)';
 
-  if (authMode === "ii") {
-    const totalICP = parseFloat(amountICP) + networkFeeICP + serviceFeeICP;
-    const confirmMsg = `Confirm transaction (II mode):
-To: ${to}
-Amount: ${amountICP} ICP
-Network fee: ${networkFeeICP} ICP
-Service fee: ${serviceFeeICP} ICP
-Total deduction: ${totalICP.toFixed(8)} ICP`;
-    if (!window.confirm(confirmMsg)) return;
+  try {
+    const to = document.getElementById("to").value;
+    const amountICP = document.getElementById("amount").value;
+    if (isNaN(parseFloat(amountICP)) || parseFloat(amountICP) < 0) {
+      throw new Error("Invalid amount");
+    }
+    const amount = BigInt(Math.round(parseFloat(amountICP) * 1e8));
 
-    const button = document.getElementById("send");
-    button.disabled = true; button.innerText = 'Processing... (may take 30s)';
+    if (authMode === "ii") {
+      const totalICP = parseFloat(amountICP) + networkFeeICP + serviceFeeICP;
+      const confirmMsg = `Confirm transaction (II mode):\nTo: ${to}\nAmount: ${amountICP} ICP\nNetwork fee: ${networkFeeICP} ICP\nService fee: ${serviceFeeICP} ICP\nTotal deduction: ${totalICP.toFixed(8)} ICP`;
+      if (!window.confirm(confirmMsg)) throw new Error("Cancelled");
 
-    try {
       const result = await withTimeout(friendlyTry(() => actor.transfer_ii(to, amount), (m) => showWarn(m)));
       displayResult(result);
       await refreshBothBalances(true);
@@ -356,40 +354,21 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
       } else {
         showWarn(result);
       }
-    } catch (err) {
-      if (String(err).includes("Timed out")) {
-        showMuted("ICP send submitted, but timed out. It may still succeed—refresh balances shortly.");
-        setTimeout(() => refreshBothBalances(true), 10000); // auto-refresh after 10s
-      } else {
-        showErr(`ICP send error: ${normalizeAgentError(err)}`);
-      }
-    } finally {
-      button.disabled = false; button.innerText = 'Send ICP';
+      return;
     }
-    return;
-  }
 
-  if (authMode === "phantom") {
-    if (!solPubkey) return alert("Connect Phantom first");
-    const nonce = await actor.get_nonce(solPubkey);
+    if (authMode === "phantom") {
+      if (!solPubkey) throw new Error("Connect Phantom first");
+      const nonce = await actor.get_nonce(solPubkey);
 
-    const amountICPNum = parseFloat(amountICP);
-    const totalICP = amountICPNum + networkFeeICP + serviceFeeICP;
-    const confirmMsg = `Confirm transaction (Phantom mode):
-To: ${to}
-Amount: ${amountICP} ICP
-Network fee: ${networkFeeICP} ICP
-Service fee: ${serviceFeeICP} ICP
-Total deduction: ${totalICP.toFixed(8)} ICP`;
-    if (!window.confirm(confirmMsg)) return;
+      const amountICPNum = parseFloat(amountICP);
+      const totalICP = amountICPNum + networkFeeICP + serviceFeeICP;
+      const confirmMsg = `Confirm transaction (Phantom mode):\nTo: ${to}\nAmount: ${amountICP} ICP\nNetwork fee: ${networkFeeICP} ICP\nService fee: ${serviceFeeICP} ICP\nTotal deduction: ${totalICP.toFixed(8)} ICP`;
+      if (!window.confirm(confirmMsg)) throw new Error("Cancelled");
 
-    const message = `transfer to ${to} amount ${amount} nonce ${nonce} service_fee ${serviceFeeE8s}`;
-    const encodedMessage = new TextEncoder().encode(message);
+      const message = `transfer to ${to} amount ${amount} nonce ${nonce} service_fee ${serviceFeeE8s}`;
+      const encodedMessage = new TextEncoder().encode(message);
 
-    const button = document.getElementById("send");
-    button.disabled = true; button.innerText = 'Processing... (may take 30s)';
-
-    try {
       const signed = await provider.signMessage(encodedMessage, "utf8");
       const signature = signed.signature;
 
@@ -404,17 +383,19 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
       } else {
         showWarn(result);
       }
-    } catch (err) {
-      if (String(err).includes("Timed out")) {
-        showMuted("ICP send submitted, but timed out. It may still succeed—refresh balances shortly.");
-        setTimeout(() => refreshBothBalances(true), 10000);
-      } else {
-        showErr(`ICP send error: ${normalizeAgentError(err)}`);
-      }
-    } finally {
-      button.disabled = false;
-      button.innerText = 'Send ICP';
     }
+  } catch (err) {
+    if (String(err).includes("Timed out")) {
+      showMuted("ICP send submitted, but timed out. It may still succeed—refresh balances shortly.");
+      setTimeout(() => refreshBothBalances(true), 10000); // auto-refresh after 10s
+    } else if (err.message === "Cancelled") {
+      // User cancelled confirm, do nothing
+    } else {
+      showErr(`ICP send error: ${normalizeAgentError(err)}`);
+    }
+  } finally {
+    sendingIcp = false;
+    button.disabled = false; button.innerText = 'Send ICP';
   }
 };
 
@@ -427,90 +408,56 @@ document.getElementById("refresh_icp").onclick = async () => {
   await refreshIcpBalance(false); // throttled
 };
 
+let sendingSol = false;  // Global lock to prevent concurrent SOL sends
 document.getElementById("send_sol").onclick = async () => {
-  const to_sol = document.getElementById("to_sol").value;
-  const amountSOL = document.getElementById("amount_sol").value;
-  if (isNaN(parseFloat(amountSOL)) || parseFloat(amountSOL) < 0) {
-    return alert("Invalid amount");
-  }
-  const amountLam = BigInt(Math.round(parseFloat(amountSOL) * 1e9));
+  if (sendingSol) return showWarn("SOL send already in progress.");
+  sendingSol = true;
+  const button = document.getElementById("send_sol");
+  button.disabled = true; button.innerText = 'Processing... (may take 30s)';
 
-  let initialNonce;
-  if (authMode === "ii") {
-    initialNonce = await actor.get_nonce_ii();
-    const totalSOL = parseFloat(amountSOL) + solanaFeeApprox;
-    const totalIcpForSol = serviceFeeSolICP + icpLedgerFee;
-    const confirmMsg = `Confirm SOL transaction (II mode):
-To: ${to_sol}
-Amount: ${amountSOL} SOL
-Solana fee: ~${solanaFeeApprox} SOL
-ICP ledger fee: ${icpLedgerFee} ICP
-Service fee: ${serviceFeeSolICP} ICP
-Total SOL deduction: ${totalSOL.toFixed(9)} SOL
-Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
-    if (!window.confirm(confirmMsg)) return;
+  try {
+    const to_sol = document.getElementById("to_sol").value;
+    const amountSOL = document.getElementById("amount_sol").value;
+    if (isNaN(parseFloat(amountSOL)) || parseFloat(amountSOL) < 0) {
+      throw new Error("Invalid amount");
+    }
+    const amountLam = BigInt(Math.round(parseFloat(amountSOL) * 1e9));
 
-    const button = document.getElementById("send_sol");
-    button.disabled = true; button.innerText = 'Processing... (may take 30s)';
+    let initialNonce;
+    if (authMode === "ii") {
+      initialNonce = await actor.get_nonce_ii();
+      const totalSOL = parseFloat(amountSOL) + solanaFeeApprox;
+      const totalIcpForSol = serviceFeeSolICP + icpLedgerFee;
+      const confirmMsg = `Confirm SOL transaction (II mode):\nTo: ${to_sol}\nAmount: ${amountSOL} SOL\nSolana fee: ~${solanaFeeApprox} SOL\nICP ledger fee: ${icpLedgerFee} ICP\nService fee: ${serviceFeeSolICP} ICP\nTotal SOL deduction: ${totalSOL.toFixed(9)} SOL\nTotal ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
+      if (!window.confirm(confirmMsg)) throw new Error("Cancelled");
 
-    try {
       const result = await withTimeout(friendlyTry(() => actor.transfer_sol_ii(to_sol, amountLam), (m) => showWarn(m)));
       displayResult(result);
       await refreshBothBalances(true);
       if (result.startsWith("Transfer successful")) {
         document.getElementById("to_sol").value = '';
         document.getElementById("amount_sol").value = '';
-        showOk("SOL transfer submitted. Balances updated.");
+        showOk("SOL transfer complete. Balances updated.");
       } else {
         showWarn(result);
       }
-    } catch (err) {
-      if (String(err).includes("Timed out")) {
-        showMuted("SOL send submitted, but timed out. Checking for completion...");
-        const success = await pollNonceForChange(initialNonce);
-        if (success) {
-          displayResult("Transfer successful (confirmed via nonce change)");
-          await refreshBothBalances(true);
-          document.getElementById("to_sol").value = '';
-          document.getElementById("amount_sol").value = '';
-          showOk("SOL transfer complete (delayed confirmation). Balances updated.");
-        } else {
-          showWarn("SOL send timed out and no confirmation detected. Check explorer or retry.");
-        }
-      } else {
-        showErr(`SOL send error: ${normalizeAgentError(err)}`);
-      }
-    } finally {
-      button.disabled = false; button.innerText = 'Send SOL';
+      return;
     }
-    return;
-  }
 
-  if (authMode === "phantom") {
-    if (!solPubkey) return alert("Connect first");
+    if (authMode === "phantom") {
+      if (!solPubkey) throw new Error("Connect first");
 
-    initialNonce = await actor.get_nonce(solPubkey);
+      initialNonce = await actor.get_nonce(solPubkey);
 
-    const amountSOLNum = parseFloat(amountSOL);
-    const totalSOL = amountSOLNum + solanaFeeApprox;
-    const totalIcpForSol = serviceFeeSolICP + icpLedgerFee;
-    const confirmMsg = `Confirm SOL transaction (Phantom mode):
-To: ${to_sol}
-Amount: ${amountSOL} SOL
-Solana fee: ~${solanaFeeApprox} SOL
-ICP ledger fee: ${icpLedgerFee} ICP
-Service fee: ${serviceFeeSolICP} ICP
-Total SOL deduction: ${totalSOL.toFixed(9)} SOL
-Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
-    if (!window.confirm(confirmMsg)) return;
+      const amountSOLNum = parseFloat(amountSOL);
+      const totalSOL = amountSOLNum + solanaFeeApprox;
+      const totalIcpForSol = serviceFeeSolICP + icpLedgerFee;
+      const confirmMsg = `Confirm SOL transaction (Phantom mode):\nTo: ${to_sol}\nAmount: ${amountSOL} SOL\nSolana fee: ~${solanaFeeApprox} SOL\nICP ledger fee: ${icpLedgerFee} ICP\nService fee: ${serviceFeeSolICP} ICP\nTotal SOL deduction: ${totalSOL.toFixed(9)} SOL\nTotal ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
+      if (!window.confirm(confirmMsg)) throw new Error("Cancelled");
 
-    const message = `transfer_sol to ${to_sol} amount ${amountLam} nonce ${initialNonce} service_fee ${serviceFeeSolE8s}`;
-    const encodedMessage = new TextEncoder().encode(message);
+      const message = `transfer_sol to ${to_sol} amount ${amountLam} nonce ${initialNonce} service_fee ${serviceFeeSolE8s}`;
+      const encodedMessage = new TextEncoder().encode(message);
 
-    const button = document.getElementById("send_sol");
-    button.disabled = true; button.innerText = 'Processing... (may take 30s)';
-
-    try {
       const signed = await provider.signMessage(encodedMessage, "utf8");
       const signature = signed.signature;
 
@@ -521,35 +468,37 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
       if (result.startsWith("Transfer successful")) {
         document.getElementById("to_sol").value = '';
         document.getElementById("amount_sol").value = '';
-        showOk("SOL transfer submitted. Balances updated.");
+        showOk("SOL transfer complete. Balances updated.");
       } else {
         showWarn(result);
       }
-    } catch (err) {
-      if (String(err).includes("Timed out")) {
-        showMuted("SOL send submitted, but timed out. Checking for completion...");
-        const success = await pollNonceForChange(initialNonce);
-        if (success) {
-          displayResult("Transfer successful (confirmed via nonce change)");
-          await refreshBothBalances(true);
-          document.getElementById("to_sol").value = '';
-          document.getElementById("amount_sol").value = '';
-          showOk("SOL transfer complete (delayed confirmation). Balances updated.");
-        } else {
-          showWarn("SOL send timed out and no confirmation detected. Check explorer or retry.");
-        }
-      } else {
-        showErr(`SOL send error: ${normalizeAgentError(err)}`);
-      }
-    } finally {
-      button.disabled = false;
-      button.innerText = 'Send SOL';
     }
+  } catch (err) {
+    if (String(err).includes("Timed out")) {
+      showMuted("SOL send submitted, but timed out. Checking for completion...");
+      const success = await pollNonceForChange(initialNonce);
+      if (success) {
+        displayResult("Transfer successful (confirmed via nonce change)");
+        await refreshBothBalances(true);
+        document.getElementById("to_sol").value = '';
+        document.getElementById("amount_sol").value = '';
+        showOk("SOL transfer complete (delayed confirmation). Balances updated.");
+      } else {
+        showWarn("SOL send timed out and no confirmation detected. Check explorer or retry.");
+      }
+    } else if (err.message === "Cancelled") {
+      // User cancelled confirm, do nothing
+    } else {
+      showErr(`SOL send error: ${normalizeAgentError(err)}`);
+    }
+  } finally {
+    sendingSol = false;
+    button.disabled = false; button.innerText = 'Send SOL';
   }
 };
 
 // Polling function for nonce change (to confirm TX success after timeout)
-async function pollNonceForChange(initialNonce, maxAttempts = 5, intervalMs = 10000) {
+async function pollNonceForChange(initialNonce, maxAttempts = 10, intervalMs = 15000) {  // Increased attempts and interval
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await new Promise(resolve => setTimeout(resolve, intervalMs));
     try {
@@ -575,8 +524,8 @@ function displayResult(res) {
     const blockMatch = res.match(/block (\d+)/);
     if (blockMatch) {
       const block = blockMatch[1];
-      const link = `https://dashboard.internetcomputer.org/ledger/block/${block}`;
-      html += ` <a href="${link}" target="_blank">View on ICP Ledger Dashboard</a>`;
+      const link = `https://dashboard.internetcomputer.org/`;
+      html += ` <a href="${link}" target="_blank">View on ICP Dashboard</a>`;
     }
 
     // Solana: parse txid
