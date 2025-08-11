@@ -27,6 +27,7 @@ use lazy_static::lazy_static;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use candid::{CandidType, Deserialize};
+use hex;
 
 const SOL_RPC_CANISTER: &str = "tghme-zyaaa-aaaar-qarca-cai";
 
@@ -720,13 +721,25 @@ async fn transfer_ii(to: String, amount: u64) -> String {
         to: to_account,
         created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
     };
-    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await {
+    let transfer_res = ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await;
+    match transfer_res {
         Ok(Ok(block_height)) => {
             NONCE_MAP.with(|map| {
                 let mut map = map.borrow_mut();
                 map.insert(sol_pk_str.clone(), current_nonce + 1);
             });
-            format!("Transfer successful: block {}", block_height)
+            // Fetch encoded block and compute hash
+            let encoded_res: Result<(Vec<Vec<u8>>,), _> = ic_cdk::call(MAINNET_LEDGER_CANISTER_ID, "query_encoded_blocks", (block_height, 1u64)).await;
+            match encoded_res {
+                Ok((encoded,)) if encoded.len() == 1 => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&encoded[0]);
+                    let hash_bytes = hasher.finalize();
+                    let hash_hex = hex::encode(hash_bytes);
+                    format!("Transfer successful: block {} hash {}", block_height, hash_hex)
+                }
+                _ => format!("Transfer successful: block {} (hash fetch failed)", block_height),
+            }
         }
         Ok(Err(e)) => format!("Transfer failed: {:?}", e),
         Err(e) => format!("Call error: {:?}", e),
@@ -920,13 +933,25 @@ async fn transfer(to: String, amount: u64, sol_pubkey: String, signature: Vec<u8
         to: to_account,
         created_at_time: Some(Timestamp { timestamp_nanos: ic_cdk::api::time() }),
     };
-    match ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await {
+    let transfer_res = ic_ledger_types::transfer(MAINNET_LEDGER_CANISTER_ID, &transfer_args).await;
+    match transfer_res {
         Ok(Ok(block_height)) => {
             NONCE_MAP.with(|map| {
                 let mut map = map.borrow_mut();
                 map.insert(sol_pubkey.clone(), current_nonce + 1);
             });
-            format!("Transfer successful: block {}", block_height)
+            // Fetch encoded block and compute hash
+            let encoded_res: Result<(Vec<Vec<u8>>,), _> = ic_cdk::call(MAINNET_LEDGER_CANISTER_ID, "query_encoded_blocks", (block_height, 1u64)).await;
+            match encoded_res {
+                Ok((encoded,)) if encoded.len() == 1 => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&encoded[0]);
+                    let hash_bytes = hasher.finalize();
+                    let hash_hex = hex::encode(hash_bytes);
+                    format!("Transfer successful: block {} hash {}", block_height, hash_hex)
+                }
+                _ => format!("Transfer successful: block {} (hash fetch failed)", block_height),
+            }
         }
         Ok(Err(e)) => format!("Transfer failed: {:?}", e),
         Err(e) => format!("Call error: {:?}", e),

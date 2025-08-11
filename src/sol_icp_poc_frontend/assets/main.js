@@ -1,3 +1,4 @@
+// src/sol_icp_poc_frontend/assets/main.js
 import { Actor, HttpAgent } from "@dfinity/agent";
 import { AuthClient } from "@dfinity/auth-client";
 import idlFactory from "./sol_icp_poc_backend.idl.js";
@@ -166,7 +167,7 @@ async function refreshIcpBalance(force = false) {
 }
 
 async function refreshBothBalances(force = false) {
- await Promise.allSettled([
+  await Promise.allSettled([
     refreshIcpBalance(force),
     refreshSolBalance(force),
   ]);
@@ -325,10 +326,7 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
 
     try {
       const result = await friendlyTry(() => actor.transfer_ii(to, amount), (m) => showWarn(m));
-      // Extract block for explorer link
-      const blockMatch = result.match(/block (\d+)/);
-      const block = blockMatch ? blockMatch[1] : '';
-      uiSet("status", `${result}${block ? ` View on Dashboard: https://dashboard.internetcomputer.org/block/${block}` : ''}`);
+      displayResult(result);
       await refreshBothBalances(true);
       if (result.startsWith("Transfer successful")) {
         document.getElementById("to").value = '';
@@ -370,10 +368,7 @@ Total deduction: ${totalICP.toFixed(8)} ICP`;
       const signature = signed.signature;
 
       const result = await friendlyTry(() => actor.transfer(to, amount, solPubkey, Array.from(signature), nonce), (m) => showWarn(m));
-      // Extract block for explorer link
-      const blockMatch = result.match(/block (\d+)/);
-      const block = blockMatch ? blockMatch[1] : '';
-      uiSet("status", `${result}${block ? ` View on Dashboard: https://dashboard.internetcomputer.org/block/${block}` : ''}`);
+      displayResult(result);
       await refreshBothBalances(true);
 
       if (result.startsWith("Transfer successful")) {
@@ -427,10 +422,7 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
 
     try {
       const result = await friendlyTry(() => actor.transfer_sol_ii(to_sol, amountLam), (m) => showWarn(m));
-      // Extract txid for explorer link
-      const txidMatch = result.match(/txid (.+)/);
-      const txid = txidMatch ? txidMatch[1] : '';
-      uiSet("status", `${result}${txid ? ` View on Solana FM: https://solana.fm/tx/${txid}` : ''}`);
+      displayResult(result);
       await refreshBothBalances(true);
       if (result.startsWith("Transfer successful")) {
         document.getElementById("to_sol").value = '';
@@ -476,10 +468,7 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
       const signature = signed.signature;
 
       const result = await friendlyTry(() => actor.transfer_sol(to_sol, amountLam, solPubkey, Array.from(signature), nonce), (m) => showWarn(m));
-      // Extract txid for explorer link
-      const txidMatch = result.match(/txid (.+)/);
-      const txid = txidMatch ? txidMatch[1] : '';
-      uiSet("status", `${result}${txid ? ` View on Solana FM: https://solana.fm/tx/${txid}` : ''}`);
+      displayResult(result);
       await refreshBothBalances(true);
 
       if (result.startsWith("Transfer successful")) {
@@ -497,6 +486,42 @@ Total ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
     }
   }
 };
+
+// Updated displayResult (parse based on content)
+function displayResult(res) {
+  const alerts = document.getElementById('alerts');
+  const div = document.createElement('div');
+
+  if (res.includes('successful')) {
+    div.className = 'ok';
+    let html = res;
+
+    // ICP: parse block
+    const blockMatch = res.match(/block (\d+)/);
+    if (blockMatch) {
+      const block = blockMatch[1];
+      const link = `https://dashboard.internetcomputer.org/ledger/block/${block}`;
+      html += ` <a href="${link}" target="_blank">View on ICP Ledger Dashboard</a>`;
+    }
+
+    // Solana: parse txid
+    const txidMatch = res.match(/txid (\S+)/);
+    if (txidMatch) {
+      const txid = txidMatch[1];
+      const link = `https://explorer.solana.com/tx/${txid}`;
+      html += ` <a href="${link}" target="_blank">View on Solana Explorer</a>`;
+    }
+
+    div.innerHTML = html;
+  } else if (res.includes('failed')) {
+    div.className = 'err';
+    div.textContent = res;
+  } else {
+    div.className = 'muted';
+    div.textContent = res;
+  }
+  alerts.prepend(div);
+}
 
 // ---- Boot ----
 await makeAgentAndActor();
