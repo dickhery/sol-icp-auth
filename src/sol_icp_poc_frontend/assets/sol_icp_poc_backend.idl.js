@@ -3,20 +3,17 @@ import { IDL } from "@dfinity/candid";
 
 export const idlFactory = ({ IDL }) =>
   IDL.Service({
-    // auth helpers
     whoami: IDL.Func([], [IDL.Text], ['query']),
     link_sol_pubkey: IDL.Func([IDL.Text, IDL.Vec(IDL.Nat8)], [IDL.Text], []),
     unlink_sol_pubkey: IDL.Func([], [IDL.Text], []),
 
-    // public reads
     get_deposit_address: IDL.Func([IDL.Text], [IDL.Text], ['query']),
     get_balance: IDL.Func([IDL.Text], [IDL.Nat64], []),
-    get_nonce: IDL.Func([IDL.Text], [IDL.Nat64], ['query']),
+    get_nonce: IDL.Func([IDL.Text], [IDL.Nat64], []), // update (no 'query')
     get_pid: IDL.Func([IDL.Text], [IDL.Text], ['query']),
     get_sol_deposit_address: IDL.Func([IDL.Text], [IDL.Text], []),
     get_sol_balance: IDL.Func([IDL.Text], [IDL.Nat64], []),
 
-    // transfers (phantom or II link)
     transfer: IDL.Func(
       [IDL.Text, IDL.Nat64, IDL.Text, IDL.Vec(IDL.Nat8), IDL.Nat64],
       [IDL.Text],
@@ -28,7 +25,6 @@ export const idlFactory = ({ IDL }) =>
       []
     ),
 
-    // II-only endpoints
     get_sol_deposit_address_ii: IDL.Func([], [IDL.Text], []),
     get_deposit_address_ii: IDL.Func([], [IDL.Text], []),
     get_sol_balance_ii: IDL.Func([], [IDL.Nat64], []),

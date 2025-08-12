@@ -12,7 +12,7 @@ use ic_cdk::management_canister::{
 };
 use ic_principal::Principal;
 use ic_ledger_types::{
-    AccountIdentifier, Memo, Subaccount, Timestamp, Tokens, TransferArgs, TransferError, DEFAULT_FEE,
+    AccountIdentifier, Memo, Subaccount, Timestamp, Tokens, TransferArgs, DEFAULT_FEE,
     MAINNET_LEDGER_CANISTER_ID,
 };
 use ic_stable_structures::{
@@ -294,7 +294,6 @@ fn serialize_message(header: [u8; 3], accounts: &Vec<[u8; 32]>, blockhash: [u8; 
 /* ----------- dynamic cycles helper (shared) ----------- */
 
 fn parse_required_cycles(err: &str) -> Option<u128> {
-    // Handle mgmt: "but X cycles are required"
     if let Some(start) = err.find("but ") {
         let rest = &err[start + 4..];
         if let Some(end) = rest.find(" cycles") {
@@ -306,7 +305,6 @@ fn parse_required_cycles(err: &str) -> Option<u128> {
             }
         }
     }
-    // Handle SOL RPC: "TooFewCycles: expected X, received Y"
     if err.contains("TooFewCycles") {
         if let Some(start) = err.find("expected ") {
             let rest = &err[start + 9..];
@@ -327,7 +325,6 @@ async fn schnorr_public_key_dynamic(args: &SchnorrPublicKeyArgs) -> Result<Schno
     let mgmt = Principal::management_canister();
     let arg_bytes = candid::encode_one(args).map_err(|e| format!("PK encode error: {:?}", e))?;
 
-    // start reasonably high; mgmt cost can vary
     let mut cycles: u128 = 10_000_000_000;
 
     for attempt in 0..3 {
@@ -351,7 +348,7 @@ async fn schnorr_public_key_dynamic(args: &SchnorrPublicKeyArgs) -> Result<Schno
     Err("schnorr_public_key error: retries exhausted".into())
 }
 
-/* ----------- dynamic sign_with_schnorr (your original) ----------- */
+/* ----------- dynamic sign_with_schnorr ----------- */
 
 async fn sign_with_schnorr_dynamic(sign_args: &SignWithSchnorrArgs) -> Result<SignWithSchnorrResult, String> {
     let mgmt = Principal::management_canister();
@@ -445,12 +442,24 @@ fn require_owner(sol_pubkey: &str) -> Result<(), String> {
 }
 
 fn auth_by_phantom_or_owner(sol_pubkey: &str, message: &[u8], signature: &[u8]) -> Result<(), String> {
-    // If Phantom signature is valid, allow (no II needed).
     if verify_signature(sol_pubkey, message, signature) {
         return Ok(());
     }
-    // Else require II link.
     require_owner(sol_pubkey)
+}
+
+/* -------------------------- nonce helpers (no self-call) -------------------------- */
+
+fn read_or_init_nonce(key: &str) -> u64 {
+    NONCE_MAP.with(|map| {
+        let mut m = map.borrow_mut();
+        let key_string = key.to_string();
+        let cur = m.get(&key_string).unwrap_or(0);
+        if cur == 0 {
+            m.insert(key_string, 0);
+        }
+        cur
+    })
 }
 
 /* ------------------------------ SOL RPC calls ------------------------------ */
@@ -467,7 +476,6 @@ async fn sol_get_balance_lamports(pubkey: String) -> Result<u64, String> {
 
     let args = candid::encode_args((rpc_sources, rpc_cfg, params)).map_err(|e| e.to_string())?;
 
-    // dynamic cycles
     let initial_cycles: u128 = 4_000_000_000;
     let raw = call_sol_rpc_dynamic("getBalance", args, initial_cycles).await?;
 
@@ -488,7 +496,6 @@ async fn sol_get_balance_lamports(pubkey: String) -> Result<u64, String> {
 
 async fn sol_get_finalized_slot() -> Result<u64, String> {
     let rpc_sources = RpcSources::Default(SolanaCluster::Mainnet);
-    // Set rounding_error to 50 slots (~20s) for better consensus
     let cfg = Some(GetSlotRpcConfig {
         rounding_error: Some(50),
         ..Default::default()
@@ -582,7 +589,7 @@ fn whoami() -> String {
     caller().to_text()
 }
 
-/* ---------- link/unlink (unchanged) ---------- */
+/* ---------- link/unlink ---------- */
 
 #[update]
 fn unlink_sol_pubkey() -> String {
@@ -676,23 +683,14 @@ async fn get_balance_ii() -> u64 {
 #[update]
 async fn get_nonce_ii() -> u64 {
     let sol_pk_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
-    NONCE_MAP.with(|map| {
-        let mut m = map.borrow_mut();
-        let cur = m.get(&sol_pk_str).unwrap_or(0);
-        if cur == 0 {
-            m.insert(sol_pk_str.clone(), 0);
-        }
-        cur
-    })
+    read_or_init_nonce(&sol_pk_str)
 }
 
 #[update]
 async fn transfer_ii(to: String, amount: u64) -> String {
     let sol_pk_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
+    let current_nonce = read_or_init_nonce(&sol_pk_str);
 
-    let current_nonce = get_nonce_ii().await;
-
-    // service fee in ICP
     let subaccount = derive_subaccount(&sol_pk_str);
     let service_args = TransferArgs {
         memo: Memo(0),
@@ -728,7 +726,6 @@ async fn transfer_ii(to: String, amount: u64) -> String {
                 let mut map = map.borrow_mut();
                 map.insert(sol_pk_str.clone(), current_nonce + 1);
             });
-            // Fetch encoded block and compute hash
             let encoded_res: Result<(Vec<Vec<u8>>,), _> = ic_cdk::call(MAINNET_LEDGER_CANISTER_ID, "query_encoded_blocks", (block_height, 1u64)).await;
             match encoded_res {
                 Ok((encoded,)) if encoded.len() == 1 => {
@@ -738,7 +735,8 @@ async fn transfer_ii(to: String, amount: u64) -> String {
                     let hash_hex = hex::encode(hash_bytes);
                     format!("Transfer successful: block {} hash {}", block_height, hash_hex)
                 }
-                _ => format!("Transfer successful: block {} (hash fetch failed)", block_height),
+                // NOTE: no "failed" word in success path
+                _ => format!("Transfer successful: block {} (hash not available yet)", block_height),
             }
         }
         Ok(Err(e)) => format!("Transfer failed: {:?}", e),
@@ -748,12 +746,10 @@ async fn transfer_ii(to: String, amount: u64) -> String {
 
 #[update]
 async fn transfer_sol_ii(to: String, amount: u64) -> String {
-    let current_nonce = get_nonce_ii().await;
-
-    // service fee in ICP before doing SOL tx
     let sol_pk_str = bs58::encode(get_ii_sol_pk_for_caller().await).into_string();
-    let subaccount = derive_subaccount(&sol_pk_str);
+    let current_nonce = read_or_init_nonce(&sol_pk_str);
 
+    let subaccount = derive_subaccount(&sol_pk_str);
     let service_args = TransferArgs {
         memo: Memo(0),
         amount: Tokens::from_e8s(SERVICE_FEE_SOL),
@@ -768,7 +764,6 @@ async fn transfer_sol_ii(to: String, amount: u64) -> String {
         Err(e) => return format!("Call error for service fee: {:?}", e),
     }
 
-    // build SOL tx (same as Phantom flow but using II-derived key)
     let slot = match sol_get_finalized_slot().await {
         Ok(s) => s,
         Err(e) => return format!("Failed to get slot: {}", e),
@@ -787,14 +782,14 @@ async fn transfer_sol_ii(to: String, amount: u64) -> String {
         Ok(v) => match v.try_into() { Ok(a) => a, Err(_) => return "Invalid to address".into() },
         Err(_) => return "Invalid to address".into(),
     };
-    let system_pk = [0u8; 32]; // system program = 111111... => 32 zero bytes
+    let system_pk = [0u8; 32]; // system program
     let accounts = vec![from_pk, to_pk, system_pk];
 
     let header = [1u8, 0u8, 1u8];
 
     let mut data = Vec::new();
-    data.extend(2u32.to_le_bytes()); // SystemInstruction::Transfer
-    data.extend(amount.to_le_bytes()); // lamports
+    data.extend(2u32.to_le_bytes()); // Transfer
+    data.extend(amount.to_le_bytes());
 
     let instrs = vec![CompiledInstrLike { prog_idx: 2, accts: vec![0, 1], data }];
 
@@ -832,6 +827,25 @@ async fn transfer_sol_ii(to: String, amount: u64) -> String {
 
 /* ---------- Public (read) helpers ---------- */
 
+#[update] // keep as update to avoid stale reads for apps
+fn get_nonce(sol_pubkey: String) -> u64 {
+    NONCE_MAP.with(|map| map.borrow().get(&sol_pubkey).unwrap_or(0))
+}
+
+#[query]
+fn get_pid(sol_pubkey: String) -> String {
+    let pubkey_bytes = match bs58::decode(sol_pubkey).into_vec() {
+        Ok(bytes) if bytes.len() == 32 => bytes,
+        _ => return "Invalid pubkey".to_string(),
+    };
+    let mut hasher = Sha224::new();
+    hasher.update(&pubkey_bytes);
+    let hash = hasher.finalize();
+    let mut principal_bytes: Vec<u8> = hash.to_vec();
+    principal_bytes.push(0x02); // Ed25519 type byte
+    Principal::from_slice(&principal_bytes).to_text()
+}
+
 #[update]
 async fn get_balance(sol_pubkey: String) -> u64 {
     let subaccount = derive_subaccount(&sol_pubkey);
@@ -867,27 +881,6 @@ async fn get_sol_balance(sol_pubkey: String) -> u64 {
             0
         }
     }
-}
-
-/* ---------- Nonce, PID ---------- */
-
-#[query]
-fn get_nonce(sol_pubkey: String) -> u64 {
-    NONCE_MAP.with(|map| map.borrow().get(&sol_pubkey).unwrap_or(0))
-}
-
-#[query]
-fn get_pid(sol_pubkey: String) -> String {
-    let pubkey_bytes = match bs58::decode(sol_pubkey).into_vec() {
-        Ok(bytes) if bytes.len() == 32 => bytes,
-        _ => return "Invalid pubkey".to_string(),
-    };
-    let mut hasher = Sha224::new();
-    hasher.update(&pubkey_bytes);
-    let hash = hasher.finalize();
-    let mut principal_bytes: Vec<u8> = hash.to_vec();
-    principal_bytes.push(0x02); // Ed25519 type byte
-    Principal::from_slice(&principal_bytes).to_text()
 }
 
 /* ---------- Transfers (Phantom or II link) ---------- */
@@ -940,7 +933,6 @@ async fn transfer(to: String, amount: u64, sol_pubkey: String, signature: Vec<u8
                 let mut map = map.borrow_mut();
                 map.insert(sol_pubkey.clone(), current_nonce + 1);
             });
-            // Fetch encoded block and compute hash
             let encoded_res: Result<(Vec<Vec<u8>>,), _> = ic_cdk::call(MAINNET_LEDGER_CANISTER_ID, "query_encoded_blocks", (block_height, 1u64)).await;
             match encoded_res {
                 Ok((encoded,)) if encoded.len() == 1 => {
@@ -950,7 +942,7 @@ async fn transfer(to: String, amount: u64, sol_pubkey: String, signature: Vec<u8
                     let hash_hex = hex::encode(hash_bytes);
                     format!("Transfer successful: block {} hash {}", block_height, hash_hex)
                 }
-                _ => format!("Transfer successful: block {} (hash fetch failed)", block_height),
+                _ => format!("Transfer successful: block {} (hash not available yet)", block_height),
             }
         }
         Ok(Err(e)) => format!("Transfer failed: {:?}", e),
