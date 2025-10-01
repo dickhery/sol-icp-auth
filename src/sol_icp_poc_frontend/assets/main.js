@@ -92,7 +92,7 @@ const provider = getProvider();
 const serviceFeeICP = 0.0001;         // ICP fee for ICP transfers
 const serviceFeeSolICP = 0.0002;      // ICP fee for SOL ops
 const icpLedgerFee = 0.0001;          // ICP ledger fee to move service fee
-const networkFeeICP = 0.0002;         // two ledger ops in ICP send flow
+const networkFeeICP = 0.0002;         // two ledger ops in ICP send
 const solanaFeeApprox = 0.000005;     // SOL fee approx
 const serviceFeeE8s = BigInt(Math.round(serviceFeeICP * 1e8));
 const serviceFeeSolE8s = BigInt(Math.round(serviceFeeSolICP * 1e8));
@@ -120,8 +120,9 @@ async function refreshSolBalance(force = false) {
   const button = document.getElementById("get_sol");
   if (button) { button.disabled = true; }
 
+  let lam = 0;
+  let hadError = false;
   try {
-    let lam;
     if (authMode === "ii") {
       lam = await withTimeout(friendlyTry(() => actor.get_sol_balance_ii(), (m) => showWarn(m)));
     } else if (authMode === "phantom") {
@@ -131,10 +132,10 @@ async function refreshSolBalance(force = false) {
       showWarn("Pick an auth mode to refresh SOL.");
       return;
     }
-    uiSet("sol_balance", `SOL Balance: ${(Number(lam)/1e9).toFixed(9)} SOL`);
     showMuted("SOL balance updated.");
     lastSolRefreshMs = Date.now();
   } catch (e) {
+    hadError = true;
     if (String(e).includes("Timed out")) {
       showWarn("SOL refresh timed out. Network may be slow—try again in a minute.");
     } else {
@@ -144,6 +145,9 @@ async function refreshSolBalance(force = false) {
     solRefreshInFlight = false;
     if (button) { button.disabled = false; }
   }
+  let balanceText = `SOL Balance: ${(Number(lam)/1e9).toFixed(9)} SOL`;
+  if (hadError) balanceText += " (fetch failed)";
+  uiSet("sol_balance", balanceText);
 }
 
 async function refreshIcpBalance(force = false) {
@@ -161,8 +165,9 @@ async function refreshIcpBalance(force = false) {
   const button = document.getElementById("refresh_icp");
   if (button) { button.disabled = true; }
 
+  let e8s = 0;
+  let hadError = false;
   try {
-    let e8s;
     if (authMode === "ii") {
       e8s = await withTimeout(friendlyTry(() => actor.get_balance_ii(), (m) => showWarn(m)));
     } else if (authMode === "phantom") {
@@ -172,10 +177,10 @@ async function refreshIcpBalance(force = false) {
       showWarn("Pick an auth mode to refresh ICP.");
       return;
     }
-    uiSet("balance", `ICP Balance: ${(Number(e8s)/1e8).toFixed(8)} ICP`);
     showMuted("ICP balance updated.");
     lastIcpRefreshMs = Date.now();
   } catch (e) {
+    hadError = true;
     if (String(e).includes("Timed out")) {
       showWarn("ICP refresh timed out. Network may be slow—try again in a minute.");
     } else {
@@ -185,6 +190,9 @@ async function refreshIcpBalance(force = false) {
     icpRefreshInFlight = false;
     if (button) { button.disabled = false; }
   }
+  let balanceText = `ICP Balance: ${(Number(e8s)/1e8).toFixed(8)} ICP`;
+  if (hadError) balanceText += " (fetch failed)";
+  uiSet("balance", balanceText);
 }
 
 async function refreshBothBalances(force = false) {
@@ -562,3 +570,42 @@ await makeAgentAndActor();
 uiSet("mode_status", "Pick a mode: Internet Identity or Phantom");
 showMuted("Ready.");
 document.getElementById("latest-tx").innerHTML = "No transactions yet.";
+
+// ---- Copy buttons ----
+document.getElementById("copy_icp").onclick = async () => {
+  const depositEl = document.getElementById("deposit");
+  const depositText = depositEl.innerText.trim();
+  if (!depositText.startsWith("ICP Deposit to: ")) {
+    showWarn("No ICP address loaded yet.");
+    return;
+  }
+  const address = depositText.split("ICP Deposit to: ")[1].trim();
+  try {
+    await navigator.clipboard.writeText(address);
+    const button = document.getElementById("copy_icp");
+    button.innerText = "Copied!";
+    setTimeout(() => { button.innerText = "Copy ICP Addr"; }, 2000);
+    showOk("ICP address copied to clipboard.");
+  } catch (err) {
+    showErr(`Failed to copy ICP address: ${normalizeAgentError(err)}`);
+  }
+};
+
+document.getElementById("copy_sol").onclick = async () => {
+  const solDepositEl = document.getElementById("sol_deposit");
+  const solDepositText = solDepositEl.innerText.trim();
+  if (!solDepositText.startsWith("SOL Deposit to: ")) {
+    showWarn("No SOL address loaded yet.");
+    return;
+  }
+  const address = solDepositText.split("SOL Deposit to: ")[1].trim();
+  try {
+    await navigator.clipboard.writeText(address);
+    const button = document.getElementById("copy_sol");
+    button.innerText = "Copied!";
+    setTimeout(() => { button.innerText = "Copy SOL Addr"; }, 2000);
+    showOk("SOL address copied to clipboard.");
+  } catch (err) {
+    showErr(`Failed to copy SOL address: ${normalizeAgentError(err)}`);
+  }
+};

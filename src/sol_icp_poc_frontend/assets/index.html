@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Sol-ICP POC</title>
+  <title>IC-SOL Wallet</title>
   <style>
     #alerts { margin-top: 8px; font-family: sans-serif; }
     .ok { color: #0a7f2e; }
@@ -17,7 +17,7 @@
   </style>
 </head>
 <body>
-  <h1>Solana-Auth ICP App</h1>
+  <h1>IC-SOL Wallet</h1>
 
   <h2>Auth Mode</h2>
   <p>Select authentication method. Switching will disconnect the other.</p>
@@ -39,13 +39,13 @@
     <h2>Phantom</h2>
     <button id="connect">Connect Phantom</button>
     <button id="logout">Logout Phantom</button>
-    <button id="link_wallet">Link Phantom Wallet to II (optional)</button>
     <p id="status"></p>
     <p id="pubkey"></p>
   </div>
 
   <h2>ICP</h2>
   <p id="deposit"></p>
+  <button id="copy_icp">Copy ICP Addr</button>
   <p id="balance"></p>
   <button id="refresh_icp">Refresh ICP Balance</button>
   <input id="to" placeholder="To Address (Account ID Only!)" />
@@ -55,6 +55,7 @@
   <hr>
   <h2>Solana</h2>
   <p id="sol_deposit"></p>
+  <button id="copy_sol">Copy SOL Addr</button>
   <p id="sol_balance"></p>
   <button id="get_sol">Refresh SOL Balance</button>
   <input id="to_sol" placeholder="To Solana Address (base58)" />
