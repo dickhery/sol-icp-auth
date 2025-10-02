@@ -108,6 +108,7 @@ const COOLDOWN_MS = 10_000;
 // Shared refresh that respects auth mode + cooldowns
 async function refreshSolBalance(force = false) {
   showMuted("Fetching SOL balance... this may take up to 1 minute due to network consensus.");
+  uiSet("sol_balance", "SOL Balance: Loading...");
   const now = Date.now();
   if (!force && (now - lastSolRefreshMs) < COOLDOWN_MS) {
     const wait = Math.ceil((COOLDOWN_MS - (now - lastSolRefreshMs)) / 1000);
@@ -171,6 +172,7 @@ async function refreshSolBalance(force = false) {
 
 async function refreshIcpBalance(force = false) {
   showMuted("Fetching ICP balance... this may take up to 1 minute due to network consensus.");
+  uiSet("balance", "ICP Balance: Loading...");
   const now = Date.now();
   if (!force && (now - lastIcpRefreshMs) < COOLDOWN_MS) {
     const wait = Math.ceil((COOLDOWN_MS - (now - lastIcpRefreshMs)) / 1000);
@@ -241,9 +243,22 @@ async function refreshBothBalances(force = false) {
 
 // Clear all dynamic text/inputs except latest-tx
 function clearAllExceptTx() {
-  ["deposit", "balance", "sol_deposit", "sol_balance", "pid", "pubkey", "ii_status", "status"].forEach(id => uiSet(id, ""));
+  ["ii_status", "status", "pid", "pubkey"].forEach(id => uiSet(id, ""));
+  uiSet("deposit", "ICP Deposit Address: Not loaded (connect/login first)");
+  uiSet("balance", "ICP Balance: Not loaded (connect/login first)");
+  uiSet("sol_deposit", "SOL Deposit Address: Not loaded (connect/login first)");
+  uiSet("sol_balance", "SOL Balance: Not loaded (connect/login first)");
   ["to", "amount", "to_sol", "amount_sol"].forEach(id => document.getElementById(id).value = "");
 }
+
+// ---- refresh buttons ----
+document.getElementById("get_sol").onclick = async () => {
+  await refreshSolBalance(false);
+};
+
+document.getElementById("refresh_icp").onclick = async () => {
+  await refreshIcpBalance(false);
+};
 
 // ---- Auth mode switching ----
 function enterIiUi() {
@@ -298,6 +313,7 @@ document.getElementById("ii_login").onclick = async () => {
         const prin = await actor.whoami();
         uiSet("ii_status", `Signed in as: ${prin}`);
 
+        uiSet("deposit", "ICP Deposit Address: Loading...");
         const depRes = await withTimeout(friendlyTry(async () => {
           const r = await actor.get_deposit_address_ii();
           if ('Err' in r) throw new Error(r.Err);
@@ -305,6 +321,7 @@ document.getElementById("ii_login").onclick = async () => {
         }, (m) => showWarn(m)));
         uiSet("deposit", `ICP Deposit to: ${depRes} (Send ICP here)`);
 
+        uiSet("sol_deposit", "SOL Deposit Address: Loading...");
         const solDepRes = await withTimeout(friendlyTry(async () => {
           const r = await actor.get_sol_deposit_address_ii();
           if ('Err' in r) throw new Error(r.Err);
@@ -345,9 +362,11 @@ document.getElementById("connect").onclick = async () => {
     solPubkey = resp.publicKey.toString();
     uiSet("pubkey", `Sol Pubkey: ${solPubkey} (Solana Mainnet)`);
 
+    uiSet("deposit", "ICP Deposit Address: Loading...");
     const deposit = await friendlyTry(() => actor.get_deposit_address(solPubkey), (m) => showWarn(m));
     uiSet("deposit", `ICP Deposit to: ${deposit} (Send ICP here)`);
 
+    uiSet("sol_deposit", "SOL Deposit Address: Loading...");
     const solDepositRes = await withTimeout(friendlyTry(async () => {
       const r = await actor.get_sol_deposit_address(solPubkey);
       if ('Err' in r) throw new Error(r.Err);
@@ -625,6 +644,7 @@ await makeAgentAndActor();
 uiSet("mode_status", "Pick a mode: Internet Identity or Phantom");
 showMuted("Ready.");
 document.getElementById("latest-tx").innerHTML = "No transactions yet.";
+clearAllExceptTx();  // Set initial placeholders
 
 // ---- Copy buttons ----
 document.getElementById("copy_icp").onclick = async () => {
