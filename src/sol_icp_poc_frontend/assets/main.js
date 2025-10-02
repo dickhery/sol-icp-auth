@@ -317,25 +317,6 @@ document.getElementById("logout").onclick = async () => {
   showMuted("Disconnected Phantom. To prevent auto-reconnect, revoke in Phantom settings.");
 };
 
-// ---- Link wallet to II (optional) ----
-document.getElementById("link_wallet").onclick = async () => {
-  if (!solPubkey) return alert("Connect Phantom first");
-  try {
-    if (!authClient) await initAuthIfNeeded();
-    if (!(await authClient.isAuthenticated())) return alert("Login with Internet Identity (II mode) to link");
-    const prin = await actor.whoami();
-    const message = `link ${prin}`;
-    const encoded = new TextEncoder().encode(message);
-    const signed = await provider.signMessage(encoded, "utf8");
-    const signature = signed.signature;
-
-    const res = await friendlyTry(() => actor.link_sol_pubkey(solPubkey, Array.from(signature)));
-    showOk(res);
-  } catch (err) {
-    showErr(`Link error: ${normalizeAgentError(err)}`);
-  }
-};
-
 // ---- ICP send ----
 let sendingIcp = false;
 document.getElementById("send").onclick = async () => {
