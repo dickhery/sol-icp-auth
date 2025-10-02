@@ -120,18 +120,23 @@ async function refreshSolBalance(force = false) {
   const button = document.getElementById("get_sol");
   if (button) { button.disabled = true; }
 
-  let lam = 0;
+  let lam = 0n;  // Use BigInt for nat64
   let hadError = false;
   try {
+    let res;
     if (authMode === "ii") {
-      lam = await withTimeout(friendlyTry(() => actor.get_sol_balance_ii(), (m) => showWarn(m)));
+      res = await withTimeout(friendlyTry(() => actor.get_sol_balance_ii(), (m) => showWarn(m)));
     } else if (authMode === "phantom") {
       if (!solPubkey) return showWarn("Connect Phantom first");
-      lam = await withTimeout(friendlyTry(() => actor.get_sol_balance(solPubkey), (m) => showWarn(m)));
+      res = await withTimeout(friendlyTry(() => actor.get_sol_balance(solPubkey), (m) => showWarn(m)));
     } else {
       showWarn("Pick an auth mode to refresh SOL.");
       return;
     }
+    if ('Err' in res) {
+      throw new Error(res.Err);
+    }
+    lam = res.Ok;
     showMuted("SOL balance updated.");
     lastSolRefreshMs = Date.now();
   } catch (e) {
@@ -165,18 +170,23 @@ async function refreshIcpBalance(force = false) {
   const button = document.getElementById("refresh_icp");
   if (button) { button.disabled = true; }
 
-  let e8s = 0;
+  let e8s = 0n;  // BigInt for nat64
   let hadError = false;
   try {
+    let res;
     if (authMode === "ii") {
-      e8s = await withTimeout(friendlyTry(() => actor.get_balance_ii(), (m) => showWarn(m)));
+      res = await withTimeout(friendlyTry(() => actor.get_balance_ii(), (m) => showWarn(m)));
     } else if (authMode === "phantom") {
       if (!solPubkey) return showWarn("Connect Phantom first");
-      e8s = await withTimeout(friendlyTry(() => actor.get_balance(solPubkey), (m) => showWarn(m)));
+      res = await withTimeout(friendlyTry(() => actor.get_balance(solPubkey), (m) => showWarn(m)));
     } else {
       showWarn("Pick an auth mode to refresh ICP.");
       return;
     }
+    if ('Err' in res) {
+      throw new Error(res.Err);
+    }
+    e8s = res.Ok;
     showMuted("ICP balance updated.");
     lastIcpRefreshMs = Date.now();
   } catch (e) {
@@ -250,7 +260,7 @@ document.getElementById("mode_phantom").onclick = async () => {
 document.getElementById("ii_login").onclick = async () => {
   if (authMode !== "ii") return alert("Switch to Internet Identity mode first");
   await initAuthIfNeeded();
-  const opts = { identityProvider: "https://identity.ic0.app" };
+  const opts = { identityProvider: "https://id.ai" };
   authClient.login({
     ...opts,
     maxTimeToLive: BigInt(7) * BigInt(24*60*60*1_000_000_000),
@@ -261,10 +271,20 @@ document.getElementById("ii_login").onclick = async () => {
         const prin = await actor.whoami();
         uiSet("ii_status", `Signed in as: ${prin}`);
 
-        const dep = await friendlyTry(() => actor.get_deposit_address_ii(), (m) => showWarn(m));
-        uiSet("deposit", `ICP Deposit to: ${dep} (Send ICP here)`);
-        const solDep = await friendlyTry(() => actor.get_sol_deposit_address_ii(), (m) => showWarn(m));
-        uiSet("sol_deposit", `SOL Deposit to: ${solDep} (Mainnet; send SOL here)`);
+        const depRes = await withTimeout(friendlyTry(async () => {
+          const r = await actor.get_deposit_address_ii();
+          if ('Err' in r) throw new Error(r.Err);
+          return r.Ok;
+        }, (m) => showWarn(m)));
+        uiSet("deposit", `ICP Deposit to: ${depRes} (Send ICP here)`);
+
+        const solDepRes = await withTimeout(friendlyTry(async () => {
+          const r = await actor.get_sol_deposit_address_ii();
+          if ('Err' in r) throw new Error(r.Err);
+          return r.Ok;
+        }, (m) => showWarn(m)));
+        uiSet("sol_deposit", `SOL Deposit to: ${solDepRes} (Mainnet; send SOL here)`);
+
         uiSet("pid", `ICP Principal: ${prin}`);
 
         await refreshBothBalances(true);
@@ -300,8 +320,13 @@ document.getElementById("connect").onclick = async () => {
 
     const deposit = await friendlyTry(() => actor.get_deposit_address(solPubkey), (m) => showWarn(m));
     uiSet("deposit", `ICP Deposit to: ${deposit} (Send ICP here)`);
-    const solDeposit = await friendlyTry(() => actor.get_sol_deposit_address(solPubkey), (m) => showWarn(m));
-    uiSet("sol_deposit", `SOL Deposit to: ${solDeposit} (Mainnet; send SOL here)`);
+
+    const solDepositRes = await withTimeout(friendlyTry(async () => {
+      const r = await actor.get_sol_deposit_address(solPubkey);
+      if ('Err' in r) throw new Error(r.Err);
+      return r.Ok;
+    }, (m) => showWarn(m)));
+    uiSet("sol_deposit", `SOL Deposit to: ${solDepositRes} (Mainnet; send SOL here)`);
 
     await refreshBothBalances(true);
     showOk("Connected to Phantom.");
@@ -335,7 +360,9 @@ document.getElementById("send").onclick = async () => {
     const amount = BigInt(Math.round(parseFloat(amountICP) * 1e8));
 
     if (authMode === "ii") {
-      initialNonce = await actor.get_nonce_ii();
+      const nonceRes = await actor.get_nonce_ii();
+      if ('Err' in nonceRes) throw new Error(nonceRes.Err);
+      initialNonce = nonceRes.Ok;
 
       const totalICP = parseFloat(amountICP) + networkFeeICP + serviceFeeICP;
       const confirmMsg = `Confirm transaction (II mode):\nTo: ${to}\nAmount: ${amountICP} ICP\nNetwork fee: ${networkFeeICP} ICP\nService fee: ${serviceFeeICP} ICP\nTotal deduction: ${totalICP.toFixed(8)} ICP`;
@@ -357,7 +384,9 @@ document.getElementById("send").onclick = async () => {
     if (authMode === "phantom") {
       if (!solPubkey) throw new Error("Connect Phantom first");
 
-      initialNonce = await actor.get_nonce(solPubkey);
+      const nonceRes = await actor.get_nonce(solPubkey);
+      if ('Err' in nonceRes) throw new Error(nonceRes.Err);
+      initialNonce = nonceRes.Ok;
 
       const amountICPNum = parseFloat(amountICP);
       const totalICP = amountICPNum + networkFeeICP + serviceFeeICP;
@@ -422,7 +451,9 @@ document.getElementById("send_sol").onclick = async () => {
     const amountLam = BigInt(Math.round(parseFloat(amountSOL) * 1e9));
 
     if (authMode === "ii") {
-      initialNonce = await actor.get_nonce_ii();
+      const nonceRes = await actor.get_nonce_ii();
+      if ('Err' in nonceRes) throw new Error(nonceRes.Err);
+      initialNonce = nonceRes.Ok;
       const totalSOL = parseFloat(amountSOL) + solanaFeeApprox;
       const totalIcpForSol = serviceFeeSolICP + icpLedgerFee;
       const confirmMsg = `Confirm SOL transaction (II mode):\nTo: ${to_sol}\nAmount: ${amountSOL} SOL\nSolana fee: ~${solanaFeeApprox} SOL\nICP ledger fee: ${icpLedgerFee} ICP\nService fee: ${serviceFeeSolICP} ICP\nTotal SOL deduction: ${totalSOL.toFixed(9)} SOL\nTotal ICP deduction: ${totalIcpForSol.toFixed(4)} ICP`;
@@ -443,7 +474,9 @@ document.getElementById("send_sol").onclick = async () => {
 
     if (authMode === "phantom") {
       if (!solPubkey) throw new Error("Connect first");
-      initialNonce = await actor.get_nonce(solPubkey);
+      const nonceRes = await actor.get_nonce(solPubkey);
+      if ('Err' in nonceRes) throw new Error(nonceRes.Err);
+      initialNonce = nonceRes.Ok;
 
       const amountSOLNum = parseFloat(amountSOL);
       const totalSOL = amountSOLNum + solanaFeeApprox;
@@ -488,7 +521,14 @@ async function pollNonceForChange(initialNonce, maxAttempts = 10, intervalMs = 1
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await new Promise(resolve => setTimeout(resolve, intervalMs));
     try {
-      const currentNonce = authMode === "ii" ? await actor.get_nonce_ii() : await actor.get_nonce(solPubkey);
+      let nonceRes;
+      if (authMode === "ii") {
+        nonceRes = await actor.get_nonce_ii();
+      } else {
+        nonceRes = await actor.get_nonce(solPubkey);
+      }
+      if ('Err' in nonceRes) continue;
+      const currentNonce = nonceRes.Ok;
       if (currentNonce > initialNonce) {
         return true; // success
       }
