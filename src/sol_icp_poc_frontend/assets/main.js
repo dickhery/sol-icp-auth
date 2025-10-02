@@ -262,9 +262,9 @@ document.getElementById("ii_login").onclick = async () => {
         uiSet("ii_status", `Signed in as: ${prin}`);
 
         const dep = await friendlyTry(() => actor.get_deposit_address_ii(), (m) => showWarn(m));
-        uiSet("deposit", `ICP Deposit to: ${dep}`);
+        uiSet("deposit", `ICP Deposit to: ${dep} (Send ICP here)`);
         const solDep = await friendlyTry(() => actor.get_sol_deposit_address_ii(), (m) => showWarn(m));
-        uiSet("sol_deposit", `SOL Deposit to: ${solDep}`);
+        uiSet("sol_deposit", `SOL Deposit to: ${solDep} (Mainnet; send SOL here)`);
         uiSet("pid", `ICP Principal: ${prin}`);
 
         await refreshBothBalances(true);
@@ -560,7 +560,7 @@ document.getElementById("copy_icp").onclick = async () => {
     showWarn("No ICP address loaded yet.");
     return;
   }
-  const address = depositText.split("ICP Deposit to: ")[1].trim();
+  const address = depositText.split("ICP Deposit to: ")[1].trim().split(' ')[0];
   try {
     await navigator.clipboard.writeText(address);
     const button = document.getElementById("copy_icp");
@@ -579,7 +579,7 @@ document.getElementById("copy_sol").onclick = async () => {
     showWarn("No SOL address loaded yet.");
     return;
   }
-  const address = solDepositText.split("SOL Deposit to: ")[1].trim();
+  const address = solDepositText.split("SOL Deposit to: ")[1].trim().split(' ')[0];
   try {
     await navigator.clipboard.writeText(address);
     const button = document.getElementById("copy_sol");
