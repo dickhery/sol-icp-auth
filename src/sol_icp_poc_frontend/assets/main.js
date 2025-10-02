@@ -50,15 +50,16 @@ function normalizeAgentError(e) {
 
 function friendlyTry(fn, onErr) {
   return fn().catch((e) => {
+    console.error('Error in operation:', e, e.stack);
     const msg = normalizeAgentError(e);
     if (onErr) onErr(msg, e);
     else showErr(msg);
-    throw e; // keep behavior for upstream catch/finally
+    throw e;
   });
 }
 
 // Add timeout wrapper for calls
-async function withTimeout(promise, ms = 900000) {  // 15 minutes
+async function withTimeout(promise, ms = 300000) {  // Increased to 5min to handle slow outcalls
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(`Timed out after ${ms} ms`)), ms);
@@ -106,6 +107,7 @@ const COOLDOWN_MS = 10_000;
 
 // Shared refresh that respects auth mode + cooldowns
 async function refreshSolBalance(force = false) {
+  showMuted("Fetching SOL balance... this may take up to 1 minute due to network consensus.");
   const now = Date.now();
   if (!force && (now - lastSolRefreshMs) < COOLDOWN_MS) {
     const wait = Math.ceil((COOLDOWN_MS - (now - lastSolRefreshMs)) / 1000);
@@ -122,40 +124,53 @@ async function refreshSolBalance(force = false) {
 
   let lam = 0n;  // Use BigInt for nat64
   let hadError = false;
-  try {
-    let res;
-    if (authMode === "ii") {
-      res = await withTimeout(friendlyTry(() => actor.get_sol_balance_ii(), (m) => showWarn(m)));
-    } else if (authMode === "phantom") {
-      if (!solPubkey) return showWarn("Connect Phantom first");
-      res = await withTimeout(friendlyTry(() => actor.get_sol_balance(solPubkey), (m) => showWarn(m)));
-    } else {
-      showWarn("Pick an auth mode to refresh SOL.");
-      return;
+  let attempts = 0;
+  const maxRetries = 3;
+  const retryInterval = 10000;  // 10s between retries
+
+  while (attempts < maxRetries) {
+    attempts++;
+    try {
+      let res;
+      if (authMode === "ii") {
+        res = await withTimeout(friendlyTry(() => actor.get_sol_balance_ii(), (m) => showWarn(m)));
+      } else if (authMode === "phantom") {
+        if (!solPubkey) return showWarn("Connect Phantom first");
+        res = await withTimeout(friendlyTry(() => actor.get_sol_balance(solPubkey), (m) => showWarn(m)));
+      } else {
+        showWarn("Pick an auth mode to refresh SOL.");
+        return;
+      }
+      if ('Err' in res) {
+        throw new Error(res.Err);
+      }
+      lam = res.Ok;
+      showMuted("SOL balance updated.");
+      lastSolRefreshMs = Date.now();
+      break;  // Success, exit loop
+    } catch (e) {
+      hadError = true;
+      console.error('Refresh SOL error:', e, e.stack);
+      const msg = normalizeAgentError(e);
+      if (msg.includes("Timed out") && attempts < maxRetries) {
+        showWarn(`SOL refresh timed out (attempt ${attempts}/${maxRetries}). Retrying in 10s...`);
+        await new Promise(resolve => setTimeout(resolve, retryInterval));
+        continue;  // Retry
+      } else {
+        showErr(msg);
+        break;
+      }
     }
-    if ('Err' in res) {
-      throw new Error(res.Err);
-    }
-    lam = res.Ok;
-    showMuted("SOL balance updated.");
-    lastSolRefreshMs = Date.now();
-  } catch (e) {
-    hadError = true;
-    if (String(e).includes("Timed out")) {
-      showWarn("SOL refresh timed out. Network may be slow—try again in a minute.");
-    } else {
-      showErr(normalizeAgentError(e));
-    }
-  } finally {
-    solRefreshInFlight = false;
-    if (button) { button.disabled = false; }
   }
+  solRefreshInFlight = false;
+  if (button) { button.disabled = false; }
   let balanceText = `SOL Balance: ${(Number(lam)/1e9).toFixed(9)} SOL`;
-  if (hadError) balanceText += " (fetch failed)";
+  if (hadError) balanceText += " (fetch failed after retries)";
   uiSet("sol_balance", balanceText);
 }
 
 async function refreshIcpBalance(force = false) {
+  showMuted("Fetching ICP balance... this may take up to 1 minute due to network consensus.");
   const now = Date.now();
   if (!force && (now - lastIcpRefreshMs) < COOLDOWN_MS) {
     const wait = Math.ceil((COOLDOWN_MS - (now - lastIcpRefreshMs)) / 1000);
@@ -172,36 +187,48 @@ async function refreshIcpBalance(force = false) {
 
   let e8s = 0n;  // BigInt for nat64
   let hadError = false;
-  try {
-    let res;
-    if (authMode === "ii") {
-      res = await withTimeout(friendlyTry(() => actor.get_balance_ii(), (m) => showWarn(m)));
-    } else if (authMode === "phantom") {
-      if (!solPubkey) return showWarn("Connect Phantom first");
-      res = await withTimeout(friendlyTry(() => actor.get_balance(solPubkey), (m) => showWarn(m)));
-    } else {
-      showWarn("Pick an auth mode to refresh ICP.");
-      return;
+  let attempts = 0;
+  const maxRetries = 3;
+  const retryInterval = 10000;  // 10s between retries
+
+  while (attempts < maxRetries) {
+    attempts++;
+    try {
+      let res;
+      if (authMode === "ii") {
+        res = await withTimeout(friendlyTry(() => actor.get_balance_ii(), (m) => showWarn(m)));
+      } else if (authMode === "phantom") {
+        if (!solPubkey) return showWarn("Connect Phantom first");
+        res = await withTimeout(friendlyTry(() => actor.get_balance(solPubkey), (m) => showWarn(m)));
+      } else {
+        showWarn("Pick an auth mode to refresh ICP.");
+        return;
+      }
+      if ('Err' in res) {
+        throw new Error(res.Err);
+      }
+      e8s = res.Ok;
+      showMuted("ICP balance updated.");
+      lastIcpRefreshMs = Date.now();
+      break;  // Success, exit loop
+    } catch (e) {
+      hadError = true;
+      console.error('Refresh ICP error:', e, e.stack);
+      const msg = normalizeAgentError(e);
+      if (msg.includes("Timed out") && attempts < maxRetries) {
+        showWarn(`ICP refresh timed out (attempt ${attempts}/${maxRetries}). Retrying in 10s...`);
+        await new Promise(resolve => setTimeout(resolve, retryInterval));
+        continue;  // Retry
+      } else {
+        showErr(msg);
+        break;
+      }
     }
-    if ('Err' in res) {
-      throw new Error(res.Err);
-    }
-    e8s = res.Ok;
-    showMuted("ICP balance updated.");
-    lastIcpRefreshMs = Date.now();
-  } catch (e) {
-    hadError = true;
-    if (String(e).includes("Timed out")) {
-      showWarn("ICP refresh timed out. Network may be slow—try again in a minute.");
-    } else {
-      showErr(normalizeAgentError(e));
-    }
-  } finally {
-    icpRefreshInFlight = false;
-    if (button) { button.disabled = false; }
   }
+  icpRefreshInFlight = false;
+  if (button) { button.disabled = false; }
   let balanceText = `ICP Balance: ${(Number(e8s)/1e8).toFixed(8)} ICP`;
-  if (hadError) balanceText += " (fetch failed)";
+  if (hadError) balanceText += " (fetch failed after retries)";
   uiSet("balance", balanceText);
 }
 
@@ -345,10 +372,11 @@ document.getElementById("logout").onclick = async () => {
 // ---- ICP send ----
 let sendingIcp = false;
 document.getElementById("send").onclick = async () => {
+  showMuted("Processing ICP transfer... this may take up to 2 minutes due to network consensus.");
   if (sendingIcp) return showWarn("ICP send already in progress.");
   sendingIcp = true;
   const button = document.getElementById("send");
-  button.disabled = true; button.innerText = 'Processing... (may take 30s)';
+  button.disabled = true; button.innerText = 'Processing... (may take 2min)';
 
   let initialNonce;
   try {
@@ -370,8 +398,9 @@ document.getElementById("send").onclick = async () => {
 
       const result = await withTimeout(friendlyTry(() => actor.transfer_ii(to, amount), (m) => showWarn(m)));
       displayResult(result);
-      await refreshBothBalances(true);
       if (result.startsWith("Transfer successful")) {
+        await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15s for finalization
+        await refreshBothBalances(true);
         document.getElementById("to").value = '';
         document.getElementById("amount").value = '';
         showOk("ICP transfer complete. Balances updated.");
@@ -400,9 +429,9 @@ document.getElementById("send").onclick = async () => {
 
       const result = await withTimeout(friendlyTry(() => actor.transfer(to, amount, solPubkey, Array.from(signature), initialNonce), (m) => showWarn(m)));
       displayResult(result);
-      await refreshBothBalances(true);
-
       if (result.startsWith("Transfer successful")) {
+        await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15s for finalization
+        await refreshBothBalances(true);
         document.getElementById("to").value = '';
         document.getElementById("amount").value = '';
         showOk("ICP transfer complete. Balances updated.");
@@ -411,6 +440,7 @@ document.getElementById("send").onclick = async () => {
       }
     }
   } catch (err) {
+    console.error('ICP send error:', err, err.stack);
     const msg = (err?.message || String(err || "")).toLowerCase();
     if (msg.includes("timed out") || msg.includes("processing")) {
       await confirmAfterTimeout(initialNonce, "ICP");
@@ -436,10 +466,11 @@ document.getElementById("refresh_icp").onclick = async () => {
 
 let sendingSol = false;
 document.getElementById("send_sol").onclick = async () => {
+  showMuted("Processing SOL transfer... this may take up to 2 minutes due to network consensus.");
   if (sendingSol) return showWarn("SOL send already in progress.");
   sendingSol = true;
   const button = document.getElementById("send_sol");
-  button.disabled = true; button.innerText = 'Processing... (may take 30s)';
+  button.disabled = true; button.innerText = 'Processing... (may take 2min)';
 
   let initialNonce;
   try {
@@ -461,8 +492,9 @@ document.getElementById("send_sol").onclick = async () => {
 
       const result = await withTimeout(friendlyTry(() => actor.transfer_sol_ii(to_sol, amountLam), (m) => showWarn(m)));
       displayResult(result);
-      await refreshBothBalances(true);
       if (result.startsWith("Transfer successful")) {
+        await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15s for finalization
+        await refreshBothBalances(true);
         document.getElementById("to_sol").value = '';
         document.getElementById("amount_sol").value = '';
         showOk("SOL transfer complete. Balances updated.");
@@ -473,6 +505,7 @@ document.getElementById("send_sol").onclick = async () => {
     }
 
     if (authMode === "phantom") {
+      if (!solPubkey) throw new Error("Connect first");
       if (!solPubkey) throw new Error("Connect first");
       const nonceRes = await actor.get_nonce(solPubkey);
       if ('Err' in nonceRes) throw new Error(nonceRes.Err);
@@ -491,9 +524,9 @@ document.getElementById("send_sol").onclick = async () => {
 
       const result = await withTimeout(friendlyTry(() => actor.transfer_sol(to_sol, amountLam, solPubkey, Array.from(signature), initialNonce), (m) => showWarn(m)));
       displayResult(result);
-      await refreshBothBalances(true);
-
       if (result.startsWith("Transfer successful")) {
+        await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15s for finalization
+        await refreshBothBalances(true);
         document.getElementById("to_sol").value = '';
         document.getElementById("amount_sol").value = '';
         showOk("SOL transfer complete. Balances updated.");
@@ -502,6 +535,7 @@ document.getElementById("send_sol").onclick = async () => {
       }
     }
   } catch (err) {
+    console.error('SOL send error:', err, err.stack);
     const msg = (err?.message || String(err || "")).toLowerCase();
     if (msg.includes("timed out") || msg.includes("processing")) {
       await confirmAfterTimeout(initialNonce, "SOL");

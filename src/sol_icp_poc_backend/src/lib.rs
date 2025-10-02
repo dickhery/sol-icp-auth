@@ -54,9 +54,9 @@ pub enum ConsensusStrategy { Equality }
 
 #[derive(CandidType, Deserialize, Clone, Default)]
 pub struct RpcConfig {
-    #[serde(rename = "responseConsensus")]
+    #[serde(rename = "response_consensus")]
     pub response_consensus: Option<ConsensusStrategy>,
-    #[serde(rename = "responseSizeEstimate")]
+    #[serde(rename = "response_size_estimate")]
     pub response_size_estimate: Option<u64>,
 }
 
@@ -76,7 +76,7 @@ pub enum CommitmentLevel {
 #[derive(CandidType, Deserialize, Clone)]
 pub struct GetBalanceParams {
     pub pubkey: String,
-    #[serde(rename = "minContextSlot")]
+    #[serde(rename = "min_context_slot")]
     pub min_context_slot: Option<Slot>,
     pub commitment: Option<CommitmentLevel>,
 }
@@ -108,19 +108,19 @@ pub struct RpcEndpoint { pub url: String, pub headers: Option<Vec<HttpHeader>> }
 #[derive(CandidType, Deserialize, Clone)]
 pub struct HttpHeader { pub value: String, pub name: String }
 
- /* getSlot */
+/* getSlot */
 #[derive(CandidType, Deserialize, Clone, Default)]
 pub struct GetSlotRpcConfig {
-    #[serde(rename = "roundingError")]
+    #[serde(rename = "rounding_error")]
     pub rounding_error: Option<u64>,
-    #[serde(rename = "responseConsensus")]
+    #[serde(rename = "response_consensus")]
     pub response_consensus: Option<ConsensusStrategy>,
-    #[serde(rename = "responseSizeEstimate")]
+    #[serde(rename = "response_size_estimate")]
     pub response_size_estimate: Option<u64>,
 }
 #[derive(CandidType, Deserialize, Clone, Default)]
 pub struct GetSlotParams {
-    #[serde(rename = "minContextSlot")]
+    #[serde(rename = "min_context_slot")]
     pub min_context_slot: Option<Slot>,
     pub commitment: Option<CommitmentLevel>,
 }
@@ -155,11 +155,11 @@ pub enum GetBlockParamsCommitmentInner {
 #[derive(CandidType, Deserialize, Clone)]
 pub struct GetBlockParams {
     pub slot: Slot,
-    #[serde(rename = "transactionDetails")]
+    #[serde(rename = "transaction_details")]
     pub transaction_details: Option<TransactionDetails>,
     pub rewards: Option<bool>,
     pub commitment: Option<GetBlockParamsCommitmentInner>,
-    #[serde(rename = "maxSupportedTransactionVersion")]
+    #[serde(rename = "max_supported_transaction_version")]
     pub max_supported_transaction_version: Option<u8>,
 }
 #[derive(CandidType, Deserialize, Clone)]
@@ -184,14 +184,14 @@ pub enum SendTransactionEncoding {
 #[derive(CandidType, Deserialize, Clone)]
 pub struct SendTransactionParams {
     pub transaction: String,
-    #[serde(rename = "skipPreflight")]
+    #[serde(rename = "skip_preflight")]
     pub skip_preflight: Option<bool>,
     pub encoding: Option<SendTransactionEncoding>,
-    #[serde(rename = "preflightCommitment")]
+    #[serde(rename = "preflight_commitment")]
     pub preflight_commitment: Option<CommitmentLevel>,
-    #[serde(rename = "maxRetries")]
+    #[serde(rename = "max_retries")]
     pub max_retries: Option<u32>,
-    #[serde(rename = "minContextSlot")]
+    #[serde(rename = "min_context_slot")]
     pub min_context_slot: Option<Slot>,
 }
 #[derive(CandidType, Deserialize, Clone)]
